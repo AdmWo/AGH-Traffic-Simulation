@@ -17,33 +17,135 @@ currentYellow = 0   # Indicates whether yellow signal is on or off
 
 speeds = {'car':2.25, 'bus':1.8, 'truck':1.8, 'bike':2.5}  # average speeds of vehicles
 
-# Coordinates of vehicles' start
-x = {'right':[0,0,0], 'down':[755,727,697], 'left':[1400,1400,1400], 'up':[602,627,657]}    
-y = {'right':[348,370,398], 'down':[0,0,0], 'left':[498,466,436], 'up':[800,800,800]}
-
-vehicles = {'right': {0:[], 1:[], 2:[], 'crossed':0}, 'down': {0:[], 1:[], 2:[], 'crossed':0}, 'left': {0:[], 1:[], 2:[], 'crossed':0}, 'up': {0:[], 1:[], 2:[], 'crossed':0}}
-vehicleTypes = {0:'car', 1:'bus', 2:'truck', 3:'bike'}
-directionNumbers = {0:'right', 1:'down', 2:'left', 3:'up'}
-
 # Coordinates of signal image, timer, and vehicle count
 signalCoods = [(530,230),(810,230),(810,570),(530,570)]
 signalTimerCoods = [(530,210),(810,210),(810,550),(530,550)]
 
-# Coordinates of stop lines
-stopLines = {'right': 590, 'down': 330, 'left': 800, 'up': 535}
-defaultStop = {'right': 580, 'down': 320, 'left': 810, 'up': 545}
+vehicleTypes = {0:'car', 1:'bus', 2:'truck', 3:'bike'}
+directionNumbers = {0:'right', 1:'down', 2:'left', 3:'up'}
+
+SCREEN_WIDTH = 1400
+SCREEN_HEIGHT = 800
 
 # Gap between vehicles
 stoppingGap = 25    # stopping gap
 movingGap = 25   # moving gap
 
+class Lane:
+    def __init__(self, direction, lane_id, spawn_point, stop_line, default_stop, mid_point, turn_targets=None):
+        self.direction = direction
+        self.lane_id = lane_id
+        self.base_spawn = list(spawn_point)
+        self.spawn_cursor = list(spawn_point)
+        self.stop_line = stop_line
+        self.default_stop = default_stop
+        self.mid_point = mid_point
+        self.turn_targets = turn_targets or {}
+        if(direction in ('right','left')):
+            self.centerline = spawn_point[1]
+        else:
+            self.centerline = spawn_point[0]
+
+    def next_spawn(self, vehicle_rect):
+        x, y = self.spawn_cursor
+        if(self.direction=='right'):
+            self.spawn_cursor[0] -= (vehicle_rect.width + stoppingGap)
+        elif(self.direction=='left'):
+            self.spawn_cursor[0] += (vehicle_rect.width + stoppingGap)
+        elif(self.direction=='down'):
+            self.spawn_cursor[1] -= (vehicle_rect.height + stoppingGap)
+        elif(self.direction=='up'):
+            self.spawn_cursor[1] += (vehicle_rect.height + stoppingGap)
+        return x, y
+
+    def reset_spawn(self):
+        self.spawn_cursor = list(self.base_spawn)
+
+lane_blueprint = {
+    'right': {
+        0: {'spawn': (0, 436), 'stop_line': 590, 'default_stop': 580, 'mid': {'x':705, 'y':460}},
+        1: {'spawn': (0, 466), 'stop_line': 590, 'default_stop': 580, 'mid': {'x':705, 'y':460}, 'turn_targets': {'left': ('up', 1)}},
+        2: {'spawn': (0, 498), 'stop_line': 590, 'default_stop': 580, 'mid': {'x':705, 'y':460}, 'turn_targets': {'right': ('down', 1)}}
+    },
+    'down': {
+        0: {'spawn': (657, 0), 'stop_line': 330, 'default_stop': 320, 'mid': {'x':695, 'y':450}},
+        1: {'spawn': (627, 0), 'stop_line': 330, 'default_stop': 320, 'mid': {'x':695, 'y':450}, 'turn_targets': {'left': ('right', 1)}},
+        2: {'spawn': (602, 0), 'stop_line': 330, 'default_stop': 320, 'mid': {'x':695, 'y':450}, 'turn_targets': {'right': ('left', 1)}}
+    },
+    'left': {
+        0: {'spawn': (1400, 398), 'stop_line': 800, 'default_stop': 810, 'mid': {'x':695, 'y':425}},
+        1: {'spawn': (1400, 370), 'stop_line': 800, 'default_stop': 810, 'mid': {'x':695, 'y':425}, 'turn_targets': {'left': ('down', 1)}},
+        2: {'spawn': (1400, 348), 'stop_line': 800, 'default_stop': 810, 'mid': {'x':695, 'y':425}, 'turn_targets': {'right': ('up', 1)}}
+    },
+    'up': {
+        0: {'spawn': (697, 800), 'stop_line': 535, 'default_stop': 545, 'mid': {'x':695, 'y':400}},
+        1: {'spawn': (727, 800), 'stop_line': 535, 'default_stop': 545, 'mid': {'x':695, 'y':400}, 'turn_targets': {'left': ('left', 1)}},
+        2: {'spawn': (755, 800), 'stop_line': 535, 'default_stop': 545, 'mid': {'x':695, 'y':400}, 'turn_targets': {'right': ('right', 1)}}
+    }
+}
+
+def build_lanes():
+    layout = {}
+    for direction, lane_data in lane_blueprint.items():
+        layout[direction] = {}
+        for lane_id, config in lane_data.items():
+            layout[direction][lane_id] = Lane(
+                direction=direction,
+                lane_id=lane_id,
+                spawn_point=config['spawn'],
+                stop_line=config['stop_line'],
+                default_stop=config['default_stop'],
+                mid_point=config['mid'],
+                turn_targets=config.get('turn_targets', {})
+            )
+    return layout
+
+lanes = build_lanes()
+
+vehicles = {}
+vehiclesTurned = {}
+vehiclesNotTurned = {}
+for direction, lane_map in lanes.items():
+    vehicles[direction] = {lane_id: [] for lane_id in lane_map}
+    vehicles[direction]['crossed'] = 0
+    vehiclesTurned[direction] = {lane_id: [] for lane_id in lane_map}
+    vehiclesNotTurned[direction] = {lane_id: [] for lane_id in lane_map}
+
 # set allowed vehicle types here
 allowedVehicleTypes = {'car': True, 'bus': True, 'truck': True, 'bike': True}
 allowedVehicleTypesList = []
-vehiclesTurned = {'right': {1:[], 2:[]}, 'down': {1:[], 2:[]}, 'left': {1:[], 2:[]}, 'up': {1:[], 2:[]}}
-vehiclesNotTurned = {'right': {1:[], 2:[]}, 'down': {1:[], 2:[]}, 'left': {1:[], 2:[]}, 'up': {1:[], 2:[]}}
 rotationAngle = 3
-mid = {'right': {'x':705, 'y':445}, 'down': {'x':695, 'y':450}, 'left': {'x':695, 'y':425}, 'up': {'x':695, 'y':400}}
+
+ROAD_PADDING = 80
+horizontal_lane_centers = sorted({lane.centerline for direction in ('right','left') for lane in lanes[direction].values()})
+vertical_lane_centers = sorted({lane.centerline for direction in ('up','down') for lane in lanes[direction].values()})
+horizontal_top = min(horizontal_lane_centers) - ROAD_PADDING
+horizontal_bottom = max(horizontal_lane_centers) + ROAD_PADDING
+vertical_left = min(vertical_lane_centers) - ROAD_PADDING
+vertical_right = max(vertical_lane_centers) + ROAD_PADDING
+horizontal_height = horizontal_bottom - horizontal_top
+vertical_width = vertical_right - vertical_left
+intersection_rect = pygame.Rect(vertical_left, horizontal_top, vertical_width, horizontal_height)
+
+BACKGROUND_COLOR = (20, 110, 60)
+ROAD_COLOR = (60, 60, 60)
+INTERSECTION_COLOR = (70, 70, 70)
+LANE_LINE_COLOR = (180, 180, 180)
+STOP_LINE_COLOR = (255, 215, 0)
+
+def draw_map(surface):
+    surface.fill(BACKGROUND_COLOR)
+    pygame.draw.rect(surface, ROAD_COLOR, pygame.Rect(0, horizontal_top, SCREEN_WIDTH, horizontal_height))
+    pygame.draw.rect(surface, ROAD_COLOR, pygame.Rect(vertical_left, 0, vertical_width, SCREEN_HEIGHT))
+    pygame.draw.rect(surface, INTERSECTION_COLOR, intersection_rect)
+    for y in horizontal_lane_centers:
+        pygame.draw.line(surface, LANE_LINE_COLOR, (0, y), (SCREEN_WIDTH, y), 1)
+    for x in vertical_lane_centers:
+        pygame.draw.line(surface, LANE_LINE_COLOR, (x, 0), (x, SCREEN_HEIGHT), 1)
+    pygame.draw.line(surface, STOP_LINE_COLOR, (lanes['right'][0].stop_line, horizontal_top), (lanes['right'][0].stop_line, horizontal_bottom), 3)
+    pygame.draw.line(surface, STOP_LINE_COLOR, (lanes['left'][0].stop_line, horizontal_top), (lanes['left'][0].stop_line, horizontal_bottom), 3)
+    pygame.draw.line(surface, STOP_LINE_COLOR, (vertical_left, lanes['down'][0].stop_line), (vertical_right, lanes['down'][0].stop_line), 3)
+    pygame.draw.line(surface, STOP_LINE_COLOR, (vertical_left, lanes['up'][0].stop_line), (vertical_right, lanes['up'][0].stop_line), 3)
 # set random or default green signal time here 
 randomGreenSignalTimer = True
 # set random green signal time range here 
@@ -67,8 +169,11 @@ class Vehicle(pygame.sprite.Sprite):
         self.speed = speeds[vehicleClass]
         self.direction_number = direction_number
         self.direction = direction
-        self.x = x[direction][lane]
-        self.y = y[direction][lane]
+        self.lane_config = lanes[direction][lane]
+        self.stop_line = self.lane_config.stop_line
+        self.default_stop = self.lane_config.default_stop
+        self.mid_point = self.lane_config.mid_point
+        self.turn_targets = self.lane_config.turn_targets
         self.crossed = 0
         self.willTurn = will_turn
         self.turned = 0
@@ -79,6 +184,8 @@ class Vehicle(pygame.sprite.Sprite):
         path = "images/" + direction + "/" + vehicleClass + ".png"
         self.originalImage = pygame.image.load(path)
         self.image = pygame.image.load(path)
+        self.x, self.y = self.lane_config.next_spawn(self.image.get_rect())
+        self.stop = self.default_stop
 
         if(len(vehicles[direction][lane])>1 and vehicles[direction][lane][self.index-1].crossed==0):   
             if(direction=='right'):
@@ -97,30 +204,25 @@ class Vehicle(pygame.sprite.Sprite):
                 self.stop = vehicles[direction][lane][self.index-1].stop 
                 + vehicles[direction][lane][self.index-1].image.get_rect().height 
                 + stoppingGap
-        else:
-            self.stop = defaultStop[direction]
-            
-        # Set new starting and stopping coordinate
-        if(direction=='right'):
-            temp = self.image.get_rect().width + stoppingGap    
-            x[direction][lane] -= temp
-        elif(direction=='left'):
-            temp = self.image.get_rect().width + stoppingGap
-            x[direction][lane] += temp
-        elif(direction=='down'):
-            temp = self.image.get_rect().height + stoppingGap
-            y[direction][lane] -= temp
-        elif(direction=='up'):
-            temp = self.image.get_rect().height + stoppingGap
-            y[direction][lane] += temp
         simulation.add(self)
 
     def render(self, screen):
         screen.blit(self.image, (self.x, self.y))
 
+    def align_to_turn_target(self, turn_side):
+        target = self.turn_targets.get(turn_side)
+        if not target:
+            return
+        target_direction, target_lane = target
+        target_lane_obj = lanes[target_direction][target_lane]
+        if(target_direction in ('up','down')):
+            self.x = target_lane_obj.centerline
+        else:
+            self.y = target_lane_obj.centerline
+
     def move(self):
         if(self.direction=='right'):
-            if(self.crossed==0 and self.x+self.image.get_rect().width>stopLines[self.direction]):
+            if(self.crossed==0 and self.x+self.image.get_rect().width>self.stop_line):
                 self.crossed = 1
                 vehicles[self.direction]['crossed'] += 1
                 if(self.willTurn==0):
@@ -128,7 +230,7 @@ class Vehicle(pygame.sprite.Sprite):
                     self.crossedIndex = len(vehiclesNotTurned[self.direction][self.lane]) - 1
             if(self.willTurn==1):
                 if(self.lane == 1):
-                    if(self.crossed==0 or self.x+self.image.get_rect().width<stopLines[self.direction]+40):
+                    if(self.crossed==0 or self.x+self.image.get_rect().width<self.stop_line+40):
                         if((self.x+self.image.get_rect().width<=self.stop or (currentGreen==0 and currentYellow==0) or self.crossed==1) and (self.index==0 or self.x+self.image.get_rect().width<(vehicles[self.direction][self.lane][self.index-1].x - movingGap) or vehicles[self.direction][self.lane][self.index-1].turned==1)):               
                             self.x += self.speed
                     else:
@@ -139,13 +241,14 @@ class Vehicle(pygame.sprite.Sprite):
                             self.y -= 2.8
                             if(self.rotateAngle==90):
                                 self.turned = 1
+                                self.align_to_turn_target('left')
                                 vehiclesTurned[self.direction][self.lane].append(self)
                                 self.crossedIndex = len(vehiclesTurned[self.direction][self.lane]) - 1
                         else:
                             if(self.crossedIndex==0 or (self.y>(vehiclesTurned[self.direction][self.lane][self.crossedIndex-1].y + vehiclesTurned[self.direction][self.lane][self.crossedIndex-1].image.get_rect().height + movingGap))):
                                 self.y -= self.speed
                 elif(self.lane == 2):
-                    if(self.crossed==0 or self.x+self.image.get_rect().width<mid[self.direction]['x']):
+                    if(self.crossed==0 or self.x+self.image.get_rect().width<self.mid_point['x']):
                         if((self.x+self.image.get_rect().width<=self.stop or (currentGreen==0 and currentYellow==0) or self.crossed==1) and (self.index==0 or self.x+self.image.get_rect().width<(vehicles[self.direction][self.lane][self.index-1].x - movingGap) or vehicles[self.direction][self.lane][self.index-1].turned==1)):                 
                             self.x += self.speed
                     else:
@@ -156,6 +259,7 @@ class Vehicle(pygame.sprite.Sprite):
                             self.y += 1.8
                             if(self.rotateAngle==90):
                                 self.turned = 1
+                                self.align_to_turn_target('right')
                                 vehiclesTurned[self.direction][self.lane].append(self)
                                 self.crossedIndex = len(vehiclesTurned[self.direction][self.lane]) - 1
                         else:
@@ -169,7 +273,7 @@ class Vehicle(pygame.sprite.Sprite):
                     if((self.crossedIndex==0) or (self.x+self.image.get_rect().width<(vehiclesNotTurned[self.direction][self.lane][self.crossedIndex-1].x - movingGap))):                 
                         self.x += self.speed
         elif(self.direction=='down'):
-            if(self.crossed==0 and self.y+self.image.get_rect().height>stopLines[self.direction]):
+            if(self.crossed==0 and self.y+self.image.get_rect().height>self.stop_line):
                 self.crossed = 1
                 vehicles[self.direction]['crossed'] += 1
                 if(self.willTurn==0):
@@ -177,7 +281,7 @@ class Vehicle(pygame.sprite.Sprite):
                     self.crossedIndex = len(vehiclesNotTurned[self.direction][self.lane]) - 1
             if(self.willTurn==1):
                 if(self.lane == 1):
-                    if(self.crossed==0 or self.y+self.image.get_rect().height<stopLines[self.direction]+50):
+                    if(self.crossed==0 or self.y+self.image.get_rect().height<self.stop_line+50):
                         if((self.y+self.image.get_rect().height<=self.stop or (currentGreen==1 and currentYellow==0) or self.crossed==1) and (self.index==0 or self.y+self.image.get_rect().height<(vehicles[self.direction][self.lane][self.index-1].y - movingGap) or vehicles[self.direction][self.lane][self.index-1].turned==1)):                
                             self.y += self.speed
                     else:   
@@ -188,13 +292,14 @@ class Vehicle(pygame.sprite.Sprite):
                             self.y += 1.8
                             if(self.rotateAngle==90):
                                 self.turned = 1
+                                self.align_to_turn_target('left')
                                 vehiclesTurned[self.direction][self.lane].append(self)
                                 self.crossedIndex = len(vehiclesTurned[self.direction][self.lane]) - 1
                         else:
                             if(self.crossedIndex==0 or ((self.x + self.image.get_rect().width) < (vehiclesTurned[self.direction][self.lane][self.crossedIndex-1].x - movingGap))):
                                 self.x += self.speed
                 elif(self.lane == 2):
-                    if(self.crossed==0 or self.y+self.image.get_rect().height<mid[self.direction]['y']):
+                    if(self.crossed==0 or self.y+self.image.get_rect().height<self.mid_point['y']):
                         if((self.y+self.image.get_rect().height<=self.stop or (currentGreen==1 and currentYellow==0) or self.crossed==1) and (self.index==0 or self.y+self.image.get_rect().height<(vehicles[self.direction][self.lane][self.index-1].y - movingGap) or vehicles[self.direction][self.lane][self.index-1].turned==1)):                
                             self.y += self.speed
                     else:   
@@ -205,6 +310,7 @@ class Vehicle(pygame.sprite.Sprite):
                             self.y += 2
                             if(self.rotateAngle==90):
                                 self.turned = 1
+                                self.align_to_turn_target('right')
                                 vehiclesTurned[self.direction][self.lane].append(self)
                                 self.crossedIndex = len(vehiclesTurned[self.direction][self.lane]) - 1
                         else:
@@ -218,7 +324,7 @@ class Vehicle(pygame.sprite.Sprite):
                     if((self.crossedIndex==0) or (self.y+self.image.get_rect().height<(vehiclesNotTurned[self.direction][self.lane][self.crossedIndex-1].y - movingGap))):                
                         self.y += self.speed
         elif(self.direction=='left'):
-            if(self.crossed==0 and self.x<stopLines[self.direction]):
+            if(self.crossed==0 and self.x<self.stop_line):
                 self.crossed = 1
                 vehicles[self.direction]['crossed'] += 1
                 if(self.willTurn==0):
@@ -226,7 +332,7 @@ class Vehicle(pygame.sprite.Sprite):
                     self.crossedIndex = len(vehiclesNotTurned[self.direction][self.lane]) - 1
             if(self.willTurn==1):
                 if(self.lane == 1):
-                    if(self.crossed==0 or self.x>stopLines[self.direction]-70):
+                    if(self.crossed==0 or self.x>self.stop_line-70):
                         if((self.x>=self.stop or (currentGreen==2 and currentYellow==0) or self.crossed==1) and (self.index==0 or self.x>(vehicles[self.direction][self.lane][self.index-1].x + vehicles[self.direction][self.lane][self.index-1].image.get_rect().width + movingGap) or vehicles[self.direction][self.lane][self.index-1].turned==1)):                
                             self.x -= self.speed
                     else: 
@@ -237,13 +343,14 @@ class Vehicle(pygame.sprite.Sprite):
                             self.y += 1.2
                             if(self.rotateAngle==90):
                                 self.turned = 1
+                                self.align_to_turn_target('left')
                                 vehiclesTurned[self.direction][self.lane].append(self)
                                 self.crossedIndex = len(vehiclesTurned[self.direction][self.lane]) - 1
                         else:
                             if(self.crossedIndex==0 or ((self.y + self.image.get_rect().height) <(vehiclesTurned[self.direction][self.lane][self.crossedIndex-1].y  -  movingGap))):
                                 self.y += self.speed
                 elif(self.lane == 2):
-                    if(self.crossed==0 or self.x>mid[self.direction]['x']):
+                    if(self.crossed==0 or self.x>self.mid_point['x']):
                         if((self.x>=self.stop or (currentGreen==2 and currentYellow==0) or self.crossed==1) and (self.index==0 or self.x>(vehicles[self.direction][self.lane][self.index-1].x + vehicles[self.direction][self.lane][self.index-1].image.get_rect().width + movingGap) or vehicles[self.direction][self.lane][self.index-1].turned==1)):                
                             self.x -= self.speed
                     else:
@@ -254,6 +361,7 @@ class Vehicle(pygame.sprite.Sprite):
                             self.y -= 2.5
                             if(self.rotateAngle==90):
                                 self.turned = 1
+                                self.align_to_turn_target('right')
                                 vehiclesTurned[self.direction][self.lane].append(self)
                                 self.crossedIndex = len(vehiclesTurned[self.direction][self.lane]) - 1
                         else:
@@ -267,7 +375,7 @@ class Vehicle(pygame.sprite.Sprite):
                     if((self.crossedIndex==0) or (self.x>(vehiclesNotTurned[self.direction][self.lane][self.crossedIndex-1].x + vehiclesNotTurned[self.direction][self.lane][self.crossedIndex-1].image.get_rect().width + movingGap))):                
                         self.x -= self.speed
         elif(self.direction=='up'):
-            if(self.crossed==0 and self.y<stopLines[self.direction]):
+            if(self.crossed==0 and self.y<self.stop_line):
                 self.crossed = 1
                 vehicles[self.direction]['crossed'] += 1
                 if(self.willTurn==0):
@@ -275,7 +383,7 @@ class Vehicle(pygame.sprite.Sprite):
                     self.crossedIndex = len(vehiclesNotTurned[self.direction][self.lane]) - 1
             if(self.willTurn==1):
                 if(self.lane == 1):
-                    if(self.crossed==0 or self.y>stopLines[self.direction]-60):
+                    if(self.crossed==0 or self.y>self.stop_line-60):
                         if((self.y>=self.stop or (currentGreen==3 and currentYellow==0) or self.crossed == 1) and (self.index==0 or self.y>(vehicles[self.direction][self.lane][self.index-1].y + vehicles[self.direction][self.lane][self.index-1].image.get_rect().height +  movingGap) or vehicles[self.direction][self.lane][self.index-1].turned==1)):
                             self.y -= self.speed
                     else:   
@@ -286,13 +394,14 @@ class Vehicle(pygame.sprite.Sprite):
                             self.y -= 1.2
                             if(self.rotateAngle==90):
                                 self.turned = 1
+                                self.align_to_turn_target('left')
                                 vehiclesTurned[self.direction][self.lane].append(self)
                                 self.crossedIndex = len(vehiclesTurned[self.direction][self.lane]) - 1
                         else:
                             if(self.crossedIndex==0 or (self.x>(vehiclesTurned[self.direction][self.lane][self.crossedIndex-1].x + vehiclesTurned[self.direction][self.lane][self.crossedIndex-1].image.get_rect().width + movingGap))):
                                 self.x -= self.speed
                 elif(self.lane == 2):
-                    if(self.crossed==0 or self.y>mid[self.direction]['y']):
+                    if(self.crossed==0 or self.y>self.mid_point['y']):
                         if((self.y>=self.stop or (currentGreen==3 and currentYellow==0) or self.crossed == 1) and (self.index==0 or self.y>(vehicles[self.direction][self.lane][self.index-1].y + vehicles[self.direction][self.lane][self.index-1].image.get_rect().height +  movingGap) or vehicles[self.direction][self.lane][self.index-1].turned==1)):
                             self.y -= self.speed
                     else:   
@@ -303,6 +412,7 @@ class Vehicle(pygame.sprite.Sprite):
                             self.y -= 1
                             if(self.rotateAngle==90):
                                 self.turned = 1
+                                self.align_to_turn_target('right')
                                 vehiclesTurned[self.direction][self.lane].append(self)
                                 self.crossedIndex = len(vehiclesTurned[self.direction][self.lane]) - 1
                         else:
@@ -347,9 +457,10 @@ def repeat():
         time.sleep(1)
     currentYellow = 1   # set yellow signal on
     # reset stop coordinates of lanes and vehicles 
-    for i in range(0,3):
-        for vehicle in vehicles[directionNumbers[currentGreen]][i]:
-            vehicle.stop = defaultStop[directionNumbers[currentGreen]]
+    current_direction = directionNumbers[currentGreen]
+    for lane_id in lanes[current_direction]:
+        for vehicle in vehicles[current_direction][lane_id]:
+            vehicle.stop = vehicle.default_stop
     while(signals[currentGreen].yellow>0):  # while the timer of current yellow signal is not zero
         updateValues()
         time.sleep(1)
@@ -405,7 +516,7 @@ def generateVehicles():
         elif(temp<dist[3]):
             direction_number = 3
         Vehicle(lane_number, vehicleTypes[vehicle_type], direction_number, directionNumbers[direction_number], will_turn)
-        time.sleep(1)
+        time.sleep(0.3)
 
 class Main:
     global allowedVehicleTypesList
@@ -423,14 +534,7 @@ class Main:
     white = (255, 255, 255)
 
     # Screensize 
-    screenWidth = 1400
-    screenHeight = 800
-    screenSize = (screenWidth, screenHeight)
-
-    # Setting background image i.e. image of intersection
-    background = pygame.image.load('images/intersection.png')
-
-    screen = pygame.display.set_mode(screenSize)
+    screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
     pygame.display.set_caption("SIMULATION")
 
     # Loading signal images and font
@@ -447,7 +551,7 @@ class Main:
             if event.type == pygame.QUIT:
                 sys.exit()
 
-        screen.blit(background,(0,0))   # display background in simulation
+        draw_map(screen)   # display dynamically generated map
         for i in range(0,noOfSignals):  # display signal and set timer according to current status: green, yello, or red
             if(i==currentGreen):
                 if(currentYellow==1):
