@@ -1,583 +1,871 @@
-import random
-import time
-import threading
 import pygame
-import sys
+import random
+import threading
+import time
+from collections import deque
 
-# Default values of signal timers
-defaultGreen = {0:10, 1:10, 2:10, 3:10}
-defaultRed = 150
-defaultYellow = 5
-
-signals = []
-noOfSignals = 4
-currentGreen = 0   # Indicates which signal is green currently
-nextGreen = (currentGreen+1)%noOfSignals    # Indicates which signal will turn green next
-currentYellow = 0   # Indicates whether yellow signal is on or off 
-
-speeds = {'car':2.25, 'bus':1.8, 'truck':1.8, 'bike':2.5}  # average speeds of vehicles
-
-# Coordinates of signal image, timer, and vehicle count
-signalCoods = [(530,230),(810,230),(810,570),(530,570)]
-signalTimerCoods = [(530,210),(810,210),(810,550),(530,550)]
-
-vehicleTypes = {0:'car', 1:'bus', 2:'truck', 3:'bike'}
-directionNumbers = {0:'right', 1:'down', 2:'left', 3:'up'}
-
+# ==================== CONFIGURATION CONSTANTS ====================
+# Screen settings
 SCREEN_WIDTH = 1400
 SCREEN_HEIGHT = 800
+FPS = 60
 
-# Gap between vehicles
-stoppingGap = 25    # stopping gap
-movingGap = 25   # moving gap
+# Simulation speed multiplier (affects vehicle speed and signal timing)
+# 1.0 = normal speed, 2.0 = 2x speed, 0.5 = half speed
+SIMULATION_SPEED = 2.0
 
-class Lane:
-    def __init__(self, direction, lane_id, spawn_point, stop_line, default_stop, mid_point, turn_targets=None):
-        self.direction = direction
-        self.lane_id = lane_id
-        self.base_spawn = list(spawn_point)
-        self.spawn_cursor = list(spawn_point)
-        self.stop_line = stop_line
-        self.default_stop = default_stop
-        self.mid_point = mid_point
-        self.turn_targets = turn_targets or {}
-        if(direction in ('right','left')):
-            self.centerline = spawn_point[1]
-        else:
-            self.centerline = spawn_point[0]
+# Road settings
+LANES_PER_DIRECTION = 2
+LANE_WIDTH = 40
+ROAD_COLOR = (50, 50, 50)
+LANE_LINE_COLOR = (200, 200, 200)
+STOP_LINE_COLOR = (255, 255, 0)
 
-    def next_spawn(self, vehicle_rect):
-        x, y = self.spawn_cursor
-        if(self.direction=='right'):
-            self.spawn_cursor[0] -= (vehicle_rect.width + stoppingGap)
-        elif(self.direction=='left'):
-            self.spawn_cursor[0] += (vehicle_rect.width + stoppingGap)
-        elif(self.direction=='down'):
-            self.spawn_cursor[1] -= (vehicle_rect.height + stoppingGap)
-        elif(self.direction=='up'):
-            self.spawn_cursor[1] += (vehicle_rect.height + stoppingGap)
-        return x, y
+# Turn lane configuration (which lanes can turn)
+# In right-hand traffic: lane 0 = rightmost (outer), lane 1 = leftmost (inner)
+RIGHT_TURN_LANES = 1  # Number of rightmost lanes that can turn right (0=rightmost only)
+LEFT_TURN_LANES = 1   # Number of leftmost lanes that can turn left (highest lane numbers)
 
-    def reset_spawn(self):
-        self.spawn_cursor = list(self.base_spawn)
+# Vehicle settings - ALL PERFECT SQUARES
+VEHICLE_SPEED = 3.0  # All vehicles move at the same speed
 
-lane_blueprint = {
-    'right': {
-        0: {'spawn': (0, 436), 'stop_line': 590, 'default_stop': 580, 'mid': {'x':705, 'y':460}},
-        1: {'spawn': (0, 466), 'stop_line': 590, 'default_stop': 580, 'mid': {'x':705, 'y':460}, 'turn_targets': {'left': ('up', 1)}},
-        2: {'spawn': (0, 498), 'stop_line': 590, 'default_stop': 580, 'mid': {'x':705, 'y':460}, 'turn_targets': {'right': ('down', 1)}}
+VEHICLE_TYPES = {
+    'car': {'color': (0, 120, 255), 'size': 28, 'spawn_weight': 40},
+    'bus': {'color': (255, 200, 0), 'size': 33, 'spawn_weight': 15},
+    'truck': {'color': (150, 75, 0), 'size': 31, 'spawn_weight': 25},
+    'bike': {'color': (0, 200, 100), 'size': 26, 'spawn_weight': 20}
+}
+SAFE_DISTANCE = 15  # Minimum distance between vehicles
+TURN_RIGHT_PROBABILITY = 0.3  # 30% chance to turn right
+TURN_LEFT_PROBABILITY = 0.4   # 40% chance to turn left (remaining 30% go straight)
+TURN_CLEAR_DISTANCE = 100  # Distance to check for clear lane when turning
+
+# Traffic signal settings
+SIGNAL_RADIUS = 20
+SIGNAL_YELLOW_TIME = 3  # seconds
+SIGNAL_RED_TIME = 2  # seconds (all red for safety)
+
+# Signal phase configuration
+# Each phase defines which signals are green and for how long
+# Format: {'duration': seconds, 'green': [directions], 'arrows': [directions with right turn arrows]}
+# Directions: 'right'=A, 'down'=B, 'left'=C, 'up'=D
+SIGNAL_PHASES = [
+    {
+        'duration': 20,  # seconds
+        'green': ['right', 'left'],  # A and C main signals green
+        'arrows': ['down']  # C right turn arrow (Cr)
     },
-    'down': {
-        0: {'spawn': (657, 0), 'stop_line': 330, 'default_stop': 320, 'mid': {'x':695, 'y':450}},
-        1: {'spawn': (627, 0), 'stop_line': 330, 'default_stop': 320, 'mid': {'x':695, 'y':450}, 'turn_targets': {'left': ('right', 1)}},
-        2: {'spawn': (602, 0), 'stop_line': 330, 'default_stop': 320, 'mid': {'x':695, 'y':450}, 'turn_targets': {'right': ('left', 1)}}
-    },
-    'left': {
-        0: {'spawn': (1400, 398), 'stop_line': 800, 'default_stop': 810, 'mid': {'x':695, 'y':425}},
-        1: {'spawn': (1400, 370), 'stop_line': 800, 'default_stop': 810, 'mid': {'x':695, 'y':425}, 'turn_targets': {'left': ('down', 1)}},
-        2: {'spawn': (1400, 348), 'stop_line': 800, 'default_stop': 810, 'mid': {'x':695, 'y':425}, 'turn_targets': {'right': ('up', 1)}}
-    },
-    'up': {
-        0: {'spawn': (697, 800), 'stop_line': 535, 'default_stop': 545, 'mid': {'x':695, 'y':400}},
-        1: {'spawn': (727, 800), 'stop_line': 535, 'default_stop': 545, 'mid': {'x':695, 'y':400}, 'turn_targets': {'left': ('left', 1)}},
-        2: {'spawn': (755, 800), 'stop_line': 535, 'default_stop': 545, 'mid': {'x':695, 'y':400}, 'turn_targets': {'right': ('right', 1)}}
+    {
+        'duration': 15,  # seconds
+        'green': ['down', 'up'],  # B and D main signals green
+        'arrows': ['left']  # B right turn arrow (Br)
     }
+]
+
+# Spawn settings
+SPAWN_INTERVAL = 1.0  # seconds between spawns
+
+# Lane labels: A=West(left entry), B=North(top entry), C=East(right entry), D=South(bottom entry)
+LANE_LABELS = {
+    'right': 'A',  # Vehicles entering from West (going right/east)
+    'down': 'B',   # Vehicles entering from North (going down/south)
+    'left': 'C',   # Vehicles entering from East (going left/west)
+    'up': 'D'      # Vehicles entering from South (going up/north)
 }
 
-def build_lanes():
-    layout = {}
-    for direction, lane_data in lane_blueprint.items():
-        layout[direction] = {}
-        for lane_id, config in lane_data.items():
-            layout[direction][lane_id] = Lane(
-                direction=direction,
-                lane_id=lane_id,
-                spawn_point=config['spawn'],
-                stop_line=config['stop_line'],
-                default_stop=config['default_stop'],
-                mid_point=config['mid'],
-                turn_targets=config.get('turn_targets', {})
-            )
-    return layout
+# Destination mapping based on direction and turning
+# Format: {source_direction: {'straight': dest, 'right': dest, 'left': dest}}
+DESTINATION_MAP = {
+    'right': {'straight': 'C', 'right': 'D', 'left': 'B'},  # From A: straight->C(East), right->D(South), left->B(North)
+    'down': {'straight': 'D', 'right': 'A', 'left': 'C'},   # From B: straight->D(South), right->A(West), left->C(East)
+    'left': {'straight': 'A', 'right': 'B', 'left': 'D'},   # From C: straight->A(West), right->B(North), left->D(South)
+    'up': {'straight': 'B', 'right': 'C', 'left': 'A'}      # From D: straight->B(North), right->C(East), left->A(West)
+}
 
-lanes = build_lanes()
-
-vehicles = {}
-vehiclesTurned = {}
-vehiclesNotTurned = {}
-for direction, lane_map in lanes.items():
-    vehicles[direction] = {lane_id: [] for lane_id in lane_map}
-    vehicles[direction]['crossed'] = 0
-    vehiclesTurned[direction] = {lane_id: [] for lane_id in lane_map}
-    vehiclesNotTurned[direction] = {lane_id: [] for lane_id in lane_map}
-
-# set allowed vehicle types here
-allowedVehicleTypes = {'car': True, 'bus': True, 'truck': True, 'bike': True}
-allowedVehicleTypesList = []
-rotationAngle = 3
-
-ROAD_PADDING = 80
-horizontal_lane_centers = sorted({lane.centerline for direction in ('right','left') for lane in lanes[direction].values()})
-vertical_lane_centers = sorted({lane.centerline for direction in ('up','down') for lane in lanes[direction].values()})
-horizontal_top = min(horizontal_lane_centers) - ROAD_PADDING
-horizontal_bottom = max(horizontal_lane_centers) + ROAD_PADDING
-vertical_left = min(vertical_lane_centers) - ROAD_PADDING
-vertical_right = max(vertical_lane_centers) + ROAD_PADDING
-horizontal_height = horizontal_bottom - horizontal_top
-vertical_width = vertical_right - vertical_left
-intersection_rect = pygame.Rect(vertical_left, horizontal_top, vertical_width, horizontal_height)
-
-BACKGROUND_COLOR = (20, 110, 60)
-ROAD_COLOR = (60, 60, 60)
-INTERSECTION_COLOR = (70, 70, 70)
-LANE_LINE_COLOR = (180, 180, 180)
-STOP_LINE_COLOR = (255, 215, 0)
-
-def draw_map(surface):
-    surface.fill(BACKGROUND_COLOR)
-    pygame.draw.rect(surface, ROAD_COLOR, pygame.Rect(0, horizontal_top, SCREEN_WIDTH, horizontal_height))
-    pygame.draw.rect(surface, ROAD_COLOR, pygame.Rect(vertical_left, 0, vertical_width, SCREEN_HEIGHT))
-    pygame.draw.rect(surface, INTERSECTION_COLOR, intersection_rect)
-    for y in horizontal_lane_centers:
-        pygame.draw.line(surface, LANE_LINE_COLOR, (0, y), (SCREEN_WIDTH, y), 1)
-    for x in vertical_lane_centers:
-        pygame.draw.line(surface, LANE_LINE_COLOR, (x, 0), (x, SCREEN_HEIGHT), 1)
-    pygame.draw.line(surface, STOP_LINE_COLOR, (lanes['right'][0].stop_line, horizontal_top), (lanes['right'][0].stop_line, horizontal_bottom), 3)
-    pygame.draw.line(surface, STOP_LINE_COLOR, (lanes['left'][0].stop_line, horizontal_top), (lanes['left'][0].stop_line, horizontal_bottom), 3)
-    pygame.draw.line(surface, STOP_LINE_COLOR, (vertical_left, lanes['down'][0].stop_line), (vertical_right, lanes['down'][0].stop_line), 3)
-    pygame.draw.line(surface, STOP_LINE_COLOR, (vertical_left, lanes['up'][0].stop_line), (vertical_right, lanes['up'][0].stop_line), 3)
-# set random or default green signal time here 
-randomGreenSignalTimer = True
-# set random green signal time range here 
-randomGreenSignalTimerRange = [10,20]
-
-pygame.init()
-simulation = pygame.sprite.Group()
-
-class TrafficSignal:
-    def __init__(self, red, yellow, green):
-        self.red = red
-        self.yellow = yellow
-        self.green = green
-        self.signalText = ""
-        
-class Vehicle(pygame.sprite.Sprite):
-    def __init__(self, lane, vehicleClass, direction_number, direction, will_turn):
-        pygame.sprite.Sprite.__init__(self)
-        self.lane = lane
-        self.vehicleClass = vehicleClass
-        self.speed = speeds[vehicleClass]
-        self.direction_number = direction_number
-        self.direction = direction
-        self.lane_config = lanes[direction][lane]
-        self.stop_line = self.lane_config.stop_line
-        self.default_stop = self.lane_config.default_stop
-        self.mid_point = self.lane_config.mid_point
-        self.turn_targets = self.lane_config.turn_targets
-        self.crossed = 0
-        self.willTurn = will_turn
-        self.turned = 0
-        self.rotateAngle = 0
-        vehicles[direction][lane].append(self)
-        self.index = len(vehicles[direction][lane]) - 1
-        self.crossedIndex = 0
-        path = "images/" + direction + "/" + vehicleClass + ".png"
-        self.originalImage = pygame.image.load(path)
-        self.image = pygame.image.load(path)
-        self.x, self.y = self.lane_config.next_spawn(self.image.get_rect())
-        self.stop = self.default_stop
-
-        if(len(vehicles[direction][lane])>1 and vehicles[direction][lane][self.index-1].crossed==0):   
-            if(direction=='right'):
-                self.stop = vehicles[direction][lane][self.index-1].stop 
-                - vehicles[direction][lane][self.index-1].image.get_rect().width 
-                - stoppingGap         
-            elif(direction=='left'):
-                self.stop = vehicles[direction][lane][self.index-1].stop 
-                + vehicles[direction][lane][self.index-1].image.get_rect().width 
-                + stoppingGap
-            elif(direction=='down'):
-                self.stop = vehicles[direction][lane][self.index-1].stop 
-                - vehicles[direction][lane][self.index-1].image.get_rect().height 
-                - stoppingGap
-            elif(direction=='up'):
-                self.stop = vehicles[direction][lane][self.index-1].stop 
-                + vehicles[direction][lane][self.index-1].image.get_rect().height 
-                + stoppingGap
-        simulation.add(self)
-
-    def render(self, screen):
-        screen.blit(self.image, (self.x, self.y))
-
-    def align_to_turn_target(self, turn_side):
-        target = self.turn_targets.get(turn_side)
-        if not target:
-            return
-        target_direction, target_lane = target
-        target_lane_obj = lanes[target_direction][target_lane]
-        if(target_direction in ('up','down')):
-            self.x = target_lane_obj.centerline
-        else:
-            self.y = target_lane_obj.centerline
-
-    def move(self):
-        if(self.direction=='right'):
-            if(self.crossed==0 and self.x+self.image.get_rect().width>self.stop_line):
-                self.crossed = 1
-                vehicles[self.direction]['crossed'] += 1
-                if(self.willTurn==0):
-                    vehiclesNotTurned[self.direction][self.lane].append(self)
-                    self.crossedIndex = len(vehiclesNotTurned[self.direction][self.lane]) - 1
-            if(self.willTurn==1):
-                if(self.lane == 1):
-                    if(self.crossed==0 or self.x+self.image.get_rect().width<self.stop_line+40):
-                        if((self.x+self.image.get_rect().width<=self.stop or (currentGreen==0 and currentYellow==0) or self.crossed==1) and (self.index==0 or self.x+self.image.get_rect().width<(vehicles[self.direction][self.lane][self.index-1].x - movingGap) or vehicles[self.direction][self.lane][self.index-1].turned==1)):               
-                            self.x += self.speed
-                    else:
-                        if(self.turned==0):
-                            self.rotateAngle += rotationAngle
-                            self.image = pygame.transform.rotate(self.originalImage, self.rotateAngle)
-                            self.x += 2.4
-                            self.y -= 2.8
-                            if(self.rotateAngle==90):
-                                self.turned = 1
-                                self.align_to_turn_target('left')
-                                vehiclesTurned[self.direction][self.lane].append(self)
-                                self.crossedIndex = len(vehiclesTurned[self.direction][self.lane]) - 1
-                        else:
-                            if(self.crossedIndex==0 or (self.y>(vehiclesTurned[self.direction][self.lane][self.crossedIndex-1].y + vehiclesTurned[self.direction][self.lane][self.crossedIndex-1].image.get_rect().height + movingGap))):
-                                self.y -= self.speed
-                elif(self.lane == 2):
-                    if(self.crossed==0 or self.x+self.image.get_rect().width<self.mid_point['x']):
-                        if((self.x+self.image.get_rect().width<=self.stop or (currentGreen==0 and currentYellow==0) or self.crossed==1) and (self.index==0 or self.x+self.image.get_rect().width<(vehicles[self.direction][self.lane][self.index-1].x - movingGap) or vehicles[self.direction][self.lane][self.index-1].turned==1)):                 
-                            self.x += self.speed
-                    else:
-                        if(self.turned==0):
-                            self.rotateAngle += rotationAngle
-                            self.image = pygame.transform.rotate(self.originalImage, -self.rotateAngle)
-                            self.x += 2
-                            self.y += 1.8
-                            if(self.rotateAngle==90):
-                                self.turned = 1
-                                self.align_to_turn_target('right')
-                                vehiclesTurned[self.direction][self.lane].append(self)
-                                self.crossedIndex = len(vehiclesTurned[self.direction][self.lane]) - 1
-                        else:
-                            if(self.crossedIndex==0 or ((self.y+self.image.get_rect().height)<(vehiclesTurned[self.direction][self.lane][self.crossedIndex-1].y - movingGap))):
-                                self.y += self.speed
-            else: 
-                if(self.crossed == 0):
-                    if((self.x+self.image.get_rect().width<=self.stop or (currentGreen==0 and currentYellow==0)) and (self.index==0 or self.x+self.image.get_rect().width<(vehicles[self.direction][self.lane][self.index-1].x - movingGap))):                
-                        self.x += self.speed
-                else:
-                    if((self.crossedIndex==0) or (self.x+self.image.get_rect().width<(vehiclesNotTurned[self.direction][self.lane][self.crossedIndex-1].x - movingGap))):                 
-                        self.x += self.speed
-        elif(self.direction=='down'):
-            if(self.crossed==0 and self.y+self.image.get_rect().height>self.stop_line):
-                self.crossed = 1
-                vehicles[self.direction]['crossed'] += 1
-                if(self.willTurn==0):
-                    vehiclesNotTurned[self.direction][self.lane].append(self)
-                    self.crossedIndex = len(vehiclesNotTurned[self.direction][self.lane]) - 1
-            if(self.willTurn==1):
-                if(self.lane == 1):
-                    if(self.crossed==0 or self.y+self.image.get_rect().height<self.stop_line+50):
-                        if((self.y+self.image.get_rect().height<=self.stop or (currentGreen==1 and currentYellow==0) or self.crossed==1) and (self.index==0 or self.y+self.image.get_rect().height<(vehicles[self.direction][self.lane][self.index-1].y - movingGap) or vehicles[self.direction][self.lane][self.index-1].turned==1)):                
-                            self.y += self.speed
-                    else:   
-                        if(self.turned==0):
-                            self.rotateAngle += rotationAngle
-                            self.image = pygame.transform.rotate(self.originalImage, self.rotateAngle)
-                            self.x += 1.2
-                            self.y += 1.8
-                            if(self.rotateAngle==90):
-                                self.turned = 1
-                                self.align_to_turn_target('left')
-                                vehiclesTurned[self.direction][self.lane].append(self)
-                                self.crossedIndex = len(vehiclesTurned[self.direction][self.lane]) - 1
-                        else:
-                            if(self.crossedIndex==0 or ((self.x + self.image.get_rect().width) < (vehiclesTurned[self.direction][self.lane][self.crossedIndex-1].x - movingGap))):
-                                self.x += self.speed
-                elif(self.lane == 2):
-                    if(self.crossed==0 or self.y+self.image.get_rect().height<self.mid_point['y']):
-                        if((self.y+self.image.get_rect().height<=self.stop or (currentGreen==1 and currentYellow==0) or self.crossed==1) and (self.index==0 or self.y+self.image.get_rect().height<(vehicles[self.direction][self.lane][self.index-1].y - movingGap) or vehicles[self.direction][self.lane][self.index-1].turned==1)):                
-                            self.y += self.speed
-                    else:   
-                        if(self.turned==0):
-                            self.rotateAngle += rotationAngle
-                            self.image = pygame.transform.rotate(self.originalImage, -self.rotateAngle)
-                            self.x -= 2.5
-                            self.y += 2
-                            if(self.rotateAngle==90):
-                                self.turned = 1
-                                self.align_to_turn_target('right')
-                                vehiclesTurned[self.direction][self.lane].append(self)
-                                self.crossedIndex = len(vehiclesTurned[self.direction][self.lane]) - 1
-                        else:
-                            if(self.crossedIndex==0 or (self.x>(vehiclesTurned[self.direction][self.lane][self.crossedIndex-1].x + vehiclesTurned[self.direction][self.lane][self.crossedIndex-1].image.get_rect().width + movingGap))): 
-                                self.x -= self.speed
-            else: 
-                if(self.crossed == 0):
-                    if((self.y+self.image.get_rect().height<=self.stop or (currentGreen==1 and currentYellow==0)) and (self.index==0 or self.y+self.image.get_rect().height<(vehicles[self.direction][self.lane][self.index-1].y - movingGap))):                
-                        self.y += self.speed
-                else:
-                    if((self.crossedIndex==0) or (self.y+self.image.get_rect().height<(vehiclesNotTurned[self.direction][self.lane][self.crossedIndex-1].y - movingGap))):                
-                        self.y += self.speed
-        elif(self.direction=='left'):
-            if(self.crossed==0 and self.x<self.stop_line):
-                self.crossed = 1
-                vehicles[self.direction]['crossed'] += 1
-                if(self.willTurn==0):
-                    vehiclesNotTurned[self.direction][self.lane].append(self)
-                    self.crossedIndex = len(vehiclesNotTurned[self.direction][self.lane]) - 1
-            if(self.willTurn==1):
-                if(self.lane == 1):
-                    if(self.crossed==0 or self.x>self.stop_line-70):
-                        if((self.x>=self.stop or (currentGreen==2 and currentYellow==0) or self.crossed==1) and (self.index==0 or self.x>(vehicles[self.direction][self.lane][self.index-1].x + vehicles[self.direction][self.lane][self.index-1].image.get_rect().width + movingGap) or vehicles[self.direction][self.lane][self.index-1].turned==1)):                
-                            self.x -= self.speed
-                    else: 
-                        if(self.turned==0):
-                            self.rotateAngle += rotationAngle
-                            self.image = pygame.transform.rotate(self.originalImage, self.rotateAngle)
-                            self.x -= 1
-                            self.y += 1.2
-                            if(self.rotateAngle==90):
-                                self.turned = 1
-                                self.align_to_turn_target('left')
-                                vehiclesTurned[self.direction][self.lane].append(self)
-                                self.crossedIndex = len(vehiclesTurned[self.direction][self.lane]) - 1
-                        else:
-                            if(self.crossedIndex==0 or ((self.y + self.image.get_rect().height) <(vehiclesTurned[self.direction][self.lane][self.crossedIndex-1].y  -  movingGap))):
-                                self.y += self.speed
-                elif(self.lane == 2):
-                    if(self.crossed==0 or self.x>self.mid_point['x']):
-                        if((self.x>=self.stop or (currentGreen==2 and currentYellow==0) or self.crossed==1) and (self.index==0 or self.x>(vehicles[self.direction][self.lane][self.index-1].x + vehicles[self.direction][self.lane][self.index-1].image.get_rect().width + movingGap) or vehicles[self.direction][self.lane][self.index-1].turned==1)):                
-                            self.x -= self.speed
-                    else:
-                        if(self.turned==0):
-                            self.rotateAngle += rotationAngle
-                            self.image = pygame.transform.rotate(self.originalImage, -self.rotateAngle)
-                            self.x -= 1.8
-                            self.y -= 2.5
-                            if(self.rotateAngle==90):
-                                self.turned = 1
-                                self.align_to_turn_target('right')
-                                vehiclesTurned[self.direction][self.lane].append(self)
-                                self.crossedIndex = len(vehiclesTurned[self.direction][self.lane]) - 1
-                        else:
-                            if(self.crossedIndex==0 or (self.y>(vehiclesTurned[self.direction][self.lane][self.crossedIndex-1].y + vehiclesTurned[self.direction][self.lane][self.crossedIndex-1].image.get_rect().height +  movingGap))):
-                                self.y -= self.speed
-            else: 
-                if(self.crossed == 0):
-                    if((self.x>=self.stop or (currentGreen==2 and currentYellow==0)) and (self.index==0 or self.x>(vehicles[self.direction][self.lane][self.index-1].x + vehicles[self.direction][self.lane][self.index-1].image.get_rect().width + movingGap))):                
-                        self.x -= self.speed
-                else:
-                    if((self.crossedIndex==0) or (self.x>(vehiclesNotTurned[self.direction][self.lane][self.crossedIndex-1].x + vehiclesNotTurned[self.direction][self.lane][self.crossedIndex-1].image.get_rect().width + movingGap))):                
-                        self.x -= self.speed
-        elif(self.direction=='up'):
-            if(self.crossed==0 and self.y<self.stop_line):
-                self.crossed = 1
-                vehicles[self.direction]['crossed'] += 1
-                if(self.willTurn==0):
-                    vehiclesNotTurned[self.direction][self.lane].append(self)
-                    self.crossedIndex = len(vehiclesNotTurned[self.direction][self.lane]) - 1
-            if(self.willTurn==1):
-                if(self.lane == 1):
-                    if(self.crossed==0 or self.y>self.stop_line-60):
-                        if((self.y>=self.stop or (currentGreen==3 and currentYellow==0) or self.crossed == 1) and (self.index==0 or self.y>(vehicles[self.direction][self.lane][self.index-1].y + vehicles[self.direction][self.lane][self.index-1].image.get_rect().height +  movingGap) or vehicles[self.direction][self.lane][self.index-1].turned==1)):
-                            self.y -= self.speed
-                    else:   
-                        if(self.turned==0):
-                            self.rotateAngle += rotationAngle
-                            self.image = pygame.transform.rotate(self.originalImage, self.rotateAngle)
-                            self.x -= 2
-                            self.y -= 1.2
-                            if(self.rotateAngle==90):
-                                self.turned = 1
-                                self.align_to_turn_target('left')
-                                vehiclesTurned[self.direction][self.lane].append(self)
-                                self.crossedIndex = len(vehiclesTurned[self.direction][self.lane]) - 1
-                        else:
-                            if(self.crossedIndex==0 or (self.x>(vehiclesTurned[self.direction][self.lane][self.crossedIndex-1].x + vehiclesTurned[self.direction][self.lane][self.crossedIndex-1].image.get_rect().width + movingGap))):
-                                self.x -= self.speed
-                elif(self.lane == 2):
-                    if(self.crossed==0 or self.y>self.mid_point['y']):
-                        if((self.y>=self.stop or (currentGreen==3 and currentYellow==0) or self.crossed == 1) and (self.index==0 or self.y>(vehicles[self.direction][self.lane][self.index-1].y + vehicles[self.direction][self.lane][self.index-1].image.get_rect().height +  movingGap) or vehicles[self.direction][self.lane][self.index-1].turned==1)):
-                            self.y -= self.speed
-                    else:   
-                        if(self.turned==0):
-                            self.rotateAngle += rotationAngle
-                            self.image = pygame.transform.rotate(self.originalImage, -self.rotateAngle)
-                            self.x += 1
-                            self.y -= 1
-                            if(self.rotateAngle==90):
-                                self.turned = 1
-                                self.align_to_turn_target('right')
-                                vehiclesTurned[self.direction][self.lane].append(self)
-                                self.crossedIndex = len(vehiclesTurned[self.direction][self.lane]) - 1
-                        else:
-                            if(self.crossedIndex==0 or (self.x<(vehiclesTurned[self.direction][self.lane][self.crossedIndex-1].x - vehiclesTurned[self.direction][self.lane][self.crossedIndex-1].image.get_rect().width - movingGap))):
-                                self.x += self.speed
-            else: 
-                if(self.crossed == 0):
-                    if((self.y>=self.stop or (currentGreen==3 and currentYellow==0)) and (self.index==0 or self.y>(vehicles[self.direction][self.lane][self.index-1].y + vehicles[self.direction][self.lane][self.index-1].image.get_rect().height + movingGap))):                
-                        self.y -= self.speed
-                else:
-                    if((self.crossedIndex==0) or (self.y>(vehiclesNotTurned[self.direction][self.lane][self.crossedIndex-1].y + vehiclesNotTurned[self.direction][self.lane][self.crossedIndex-1].image.get_rect().height + movingGap))):                
-                        self.y -= self.speed 
-
-# Initialization of signals with default values
-def initialize():
-    minTime = randomGreenSignalTimerRange[0]
-    maxTime = randomGreenSignalTimerRange[1]
-    if(randomGreenSignalTimer):
-        ts1 = TrafficSignal(0, defaultYellow, random.randint(minTime,maxTime))
-        signals.append(ts1)
-        ts2 = TrafficSignal(ts1.red+ts1.yellow+ts1.green, defaultYellow, random.randint(minTime,maxTime))
-        signals.append(ts2)
-        ts3 = TrafficSignal(defaultRed, defaultYellow, random.randint(minTime,maxTime))
-        signals.append(ts3)
-        ts4 = TrafficSignal(defaultRed, defaultYellow, random.randint(minTime,maxTime))
-        signals.append(ts4)
-    else:
-        ts1 = TrafficSignal(0, defaultYellow, defaultGreen[0])
-        signals.append(ts1)
-        ts2 = TrafficSignal(ts1.yellow+ts1.green, defaultYellow, defaultGreen[1])
-        signals.append(ts2)
-        ts3 = TrafficSignal(defaultRed, defaultYellow, defaultGreen[2])
-        signals.append(ts3)
-        ts4 = TrafficSignal(defaultRed, defaultYellow, defaultGreen[3])
-        signals.append(ts4)
-    repeat()
-
-def repeat():
-    global currentGreen, currentYellow, nextGreen
-    while(signals[currentGreen].green>0):   # while the timer of current green signal is not zero
-        updateValues()
-        time.sleep(1)
-    currentYellow = 1   # set yellow signal on
-    # reset stop coordinates of lanes and vehicles 
-    current_direction = directionNumbers[currentGreen]
-    for lane_id in lanes[current_direction]:
-        for vehicle in vehicles[current_direction][lane_id]:
-            vehicle.stop = vehicle.default_stop
-    while(signals[currentGreen].yellow>0):  # while the timer of current yellow signal is not zero
-        updateValues()
-        time.sleep(1)
-    currentYellow = 0   # set yellow signal off
+# ==================== LANE CLASS ====================
+class Lane:
+    """Represents a single lane in one direction"""
+    def __init__(self, direction, lane_number):
+        self.direction = direction  # 'right', 'down', 'left', 'up'
+        self.lane_number = lane_number  # 0, 1, etc.
+        self.vehicles = []  # List of vehicles currently in this lane (ordered)
     
-    # reset all signal times of current signal to default/random times
-    if(randomGreenSignalTimer):
-        signals[currentGreen].green = random.randint(randomGreenSignalTimerRange[0],randomGreenSignalTimerRange[1])
-    else:
-        signals[currentGreen].green = defaultGreen[currentGreen]
-    signals[currentGreen].yellow = defaultYellow
-    signals[currentGreen].red = defaultRed
-       
-    currentGreen = nextGreen # set next signal as green signal
-    nextGreen = (currentGreen+1)%noOfSignals    # set next green signal
-    signals[nextGreen].red = signals[currentGreen].yellow+signals[currentGreen].green    # set the red time of next to next signal as (yellow time + green time) of next signal
-    repeat()  
+    def add_vehicle(self, vehicle):
+        """Add a vehicle to this lane"""
+        if vehicle not in self.vehicles:
+            self.vehicles.append(vehicle)
+    
+    def remove_vehicle(self, vehicle):
+        """Remove a vehicle from this lane"""
+        if vehicle in self.vehicles:
+            self.vehicles.remove(vehicle)
+    
+    def get_vehicle_ahead(self, vehicle):
+        """Get the vehicle directly ahead of this one in the lane"""
+        try:
+            idx = self.vehicles.index(vehicle)
+            if idx > 0:
+                return self.vehicles[idx - 1]
+        except ValueError:
+            pass
+        return None
 
-# Update values of the signal timers after every second
-def updateValues():
-    for i in range(0, noOfSignals):
-        if(i==currentGreen):
-            if(currentYellow==0):
-                signals[i].green-=1
-            else:
-                signals[i].yellow-=1
+# ==================== INTERSECTION CLASS ====================
+class Intersection:
+    """Manages the intersection area and conflict detection"""
+    def __init__(self):
+        self.vehicles_in_intersection = set()
+        self.conflict_map = self._build_conflict_map()
+    
+    def _build_conflict_map(self):
+        """Define which turning paths conflict with each other
+        
+        Returns dict: (direction, turn_type) -> [(conflicting_direction, conflicting_turn_type), ...]
+        """
+        conflicts = {
+            # Right turns: conflict with traffic from destination going straight
+            ('right', 'right'): [('up', 'straight')],      # A->D conflicts with D->B
+            ('down', 'right'): [('right', 'straight')],    # B->A conflicts with A->C
+            ('left', 'right'): [('down', 'straight')],     # C->B conflicts with B->D
+            ('up', 'right'): [('left', 'straight')],       # D->C conflicts with C->A
+            
+            # Left turns: conflict with oncoming traffic (straight and right turns)
+            ('right', 'left'): [('left', 'straight'), ('left', 'right')],  # A->B conflicts with C->A, C->D
+            ('down', 'left'): [('up', 'straight'), ('up', 'right')],       # B->C conflicts with D->B, D->A
+            ('left', 'left'): [('right', 'straight'), ('right', 'right')], # C->D conflicts with A->C, A->B
+            ('up', 'left'): [('down', 'straight'), ('down', 'right')],     # D->A conflicts with B->D, B->C
+            
+            # Straight: no conflicts (other than same-direction traffic handled by lanes)
+            ('right', 'straight'): [],
+            ('down', 'straight'): [],
+            ('left', 'straight'): [],
+            ('up', 'straight'): [],
+        }
+        return conflicts
+    
+    def can_enter(self, vehicle):
+        """Check if vehicle can safely enter intersection"""
+        my_path = (vehicle.original_direction, vehicle.turn_type)
+        conflicting_paths = self.conflict_map.get(my_path, [])
+        
+        # Check if any vehicle in intersection has a conflicting path
+        for other in self.vehicles_in_intersection:
+            other_path = (other.original_direction, other.turn_type)
+            if other_path in conflicting_paths:
+                return False
+        
+        return True
+    
+    def enter(self, vehicle):
+        """Vehicle enters the intersection"""
+        self.vehicles_in_intersection.add(vehicle)
+    
+    def exit(self, vehicle):
+        """Vehicle exits the intersection"""
+        self.vehicles_in_intersection.discard(vehicle)
+    
+    def is_vehicle_in_intersection(self, vehicle):
+        """Check if vehicle is currently in intersection"""
+        return vehicle in self.vehicles_in_intersection
+
+# ==================== TRAFFIC SIGNAL CLASS ====================
+class TrafficSignal:
+    """Manages traffic light state and timing for one direction"""
+    def __init__(self, direction, position):
+        self.direction = direction  # 'right', 'down', 'left', 'up'
+        self.position = position  # (x, y) for drawing
+        self.state = 'red'  # 'green', 'yellow', 'red'
+        self.timer = 0
+        self.turn_arrow_enabled = False  # Can be toggled
+        self.turn_arrow_state = 'red'
+        
+    def get_color(self):
+        """Returns RGB color based on current state"""
+        if self.state == 'green':
+            return (0, 255, 0)
+        elif self.state == 'yellow':
+            return (255, 255, 0)
         else:
-            signals[i].red-=1
+            return (255, 0, 0)
+    
+    def get_turn_color(self):
+        """Returns RGB color for turn arrow"""
+        if self.turn_arrow_state == 'green':
+            return (0, 255, 0)
+        else:
+            return (255, 0, 0)
+    
+    def can_go(self):
+        """Check if vehicles can proceed"""
+        return self.state == 'green'
+    
+    def can_turn(self):
+        """Check if turn arrow allows turning (when enabled, independent of main signal)"""
+        if self.turn_arrow_enabled:
+            return self.turn_arrow_state == 'green'
+        # If no arrow, turning requires green main signal
+        return self.state == 'green'
 
-# Generating vehicles in the simulation
-def generateVehicles():
-    while(True):
-        vehicle_type = random.choice(allowedVehicleTypesList)
-        lane_number = random.randint(1,2)
-        will_turn = 0
-        if(lane_number == 1):
-            temp = random.randint(0,99)
-            if(temp<40):
-                will_turn = 1
-        elif(lane_number == 2):
-            temp = random.randint(0,99)
-            if(temp<40):
-                will_turn = 1
-        temp = random.randint(0,99)
-        direction_number = 0
-        dist = [25,50,75,100]
-        if(temp<dist[0]):
-            direction_number = 0
-        elif(temp<dist[1]):
-            direction_number = 1
-        elif(temp<dist[2]):
-            direction_number = 2
-        elif(temp<dist[3]):
-            direction_number = 3
-        Vehicle(lane_number, vehicleTypes[vehicle_type], direction_number, directionNumbers[direction_number], will_turn)
-        time.sleep(0.3)
-
-class Main:
-    global allowedVehicleTypesList
-    i = 0
-    for vehicleType in allowedVehicleTypes:
-        if(allowedVehicleTypes[vehicleType]):
-            allowedVehicleTypesList.append(i)
-        i += 1
-    thread1 = threading.Thread(name="initialization",target=initialize, args=())    # initialization
-    thread1.daemon = True
-    thread1.start()
-
-    # Colours 
-    black = (0, 0, 0)
-    white = (255, 255, 255)
-
-    # Screensize 
-    screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
-    pygame.display.set_caption("SIMULATION")
-
-    # Loading signal images and font
-    redSignal = pygame.image.load('images/signals/red.png')
-    yellowSignal = pygame.image.load('images/signals/yellow.png')
-    greenSignal = pygame.image.load('images/signals/green.png')
-    font = pygame.font.Font(None, 30)
-    thread2 = threading.Thread(name="generateVehicles",target=generateVehicles, args=())    # Generating vehicles
-    thread2.daemon = True
-    thread2.start()
-
-    while True:
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                sys.exit()
-
-        draw_map(screen)   # display dynamically generated map
-        for i in range(0,noOfSignals):  # display signal and set timer according to current status: green, yello, or red
-            if(i==currentGreen):
-                if(currentYellow==1):
-                    signals[i].signalText = signals[i].yellow
-                    screen.blit(yellowSignal, signalCoods[i])
+# ==================== VEHICLE CLASS ====================
+class Vehicle:
+    """Represents a single vehicle with movement logic"""
+    def __init__(self, v_type, direction, lane):
+        self.type = v_type
+        self.original_direction = direction  # Original entry direction (for signals/stats)
+        self.direction = direction  # Current movement direction (changes during turn)
+        self.lane = lane  # 0 or 1 (0 is rightmost lane = outer/slow lane)
+        self.color = VEHICLE_TYPES[v_type]['color']
+        self.size = VEHICLE_TYPES[v_type]['size']  # Perfect square
+        self.speed = VEHICLE_SPEED * SIMULATION_SPEED
+        
+        # Determine which turns are allowed from this lane
+        # Right turns: allowed from rightmost RIGHT_TURN_LANES lanes (0, 1, ...)
+        can_turn_right = lane < RIGHT_TURN_LANES
+        # Left turns: allowed from leftmost LEFT_TURN_LANES lanes (highest lane numbers)
+        can_turn_left = lane >= (LANES_PER_DIRECTION - LEFT_TURN_LANES)
+        
+        # Determine turn intention: straight, right, or left
+        # Probability ranges: [0, 0.3) = right, [0.3, 0.5) = left, [0.5, 1.0] = straight
+        rand = random.random()
+        if can_turn_right and rand < TURN_RIGHT_PROBABILITY:
+            self.turn_type = 'right'
+        elif can_turn_left and rand >= TURN_RIGHT_PROBABILITY and rand < TURN_RIGHT_PROBABILITY + TURN_LEFT_PROBABILITY:
+            self.turn_type = 'left'
+        else:
+            self.turn_type = 'straight'
+        
+        self.has_turned = False  # Track if turn has been executed
+        
+        # Set destination label based on turn type
+        self.destination = DESTINATION_MAP[direction][self.turn_type]
+        
+        # Destination lane matches source lane (nth lane -> nth lane)
+        self.destination_lane = self.lane
+        
+        # Set initial position based on direction
+        self.x, self.y = self._get_spawn_position()
+        
+        # Intersection state tracking
+        self.crossed = False  # Track if vehicle crossed intersection
+        self.in_intersection = False  # Track if vehicle is currently in intersection
+        self.current_lane = None  # Reference to current Lane object
+        self.waiting_at_signal = False  # Waiting at red light
+        
+    def _get_spawn_position(self):
+        """Calculate spawn position based on direction and lane (right-side driving Polish style)
+        Lane 0 = rightmost lane from driver's perspective (outer/slow lane, at road edge)
+        Lane 1 = leftmost lane from driver's perspective (inner/fast lane, near center)
+        
+        In right-hand traffic (top-down view, north=up):
+        - Eastbound (right): SOUTH half (y > center_y)
+        - Westbound (left): NORTH half (y < center_y)  
+        - Southbound (down): WEST half (x < center_x)
+        - Northbound (up): EAST half (x > center_x)
+        """
+        center_x = SCREEN_WIDTH // 2
+        center_y = SCREEN_HEIGHT // 2
+        road_width = LANES_PER_DIRECTION * LANE_WIDTH
+        
+        if self.original_direction == 'right':
+            # Coming from West, driving on SOUTH half of horizontal road
+            # Lane 0 (outer) = southernmost = highest y
+            x = -self.size - 10
+            y = center_y + road_width - self.lane * LANE_WIDTH - LANE_WIDTH // 2
+            return x, y
+        elif self.original_direction == 'down':
+            # Coming from North, driving on WEST half of vertical road
+            # Lane 0 (outer) = westernmost = lowest x
+            x = center_x - road_width + self.lane * LANE_WIDTH + LANE_WIDTH // 2
+            y = -self.size - 10
+            return x, y
+        elif self.original_direction == 'left':
+            # Coming from East, driving on NORTH half of horizontal road
+            # Lane 0 (outer) = northernmost = lowest y
+            x = SCREEN_WIDTH + 10
+            y = center_y - road_width + self.lane * LANE_WIDTH + LANE_WIDTH // 2
+            return x, y
+        else:  # up
+            # Coming from South, driving on EAST half of vertical road
+            # Lane 0 (outer) = easternmost = highest x
+            x = center_x + road_width - self.lane * LANE_WIDTH - LANE_WIDTH // 2
+            y = SCREEN_HEIGHT + 10
+            return x, y
+    
+    def get_stop_position(self):
+        """Get the position where vehicle should stop at red light (based on original direction)"""
+        center_x = SCREEN_WIDTH // 2
+        center_y = SCREEN_HEIGHT // 2
+        road_width = LANES_PER_DIRECTION * LANE_WIDTH
+        
+        if self.original_direction == 'right':
+            return center_x - road_width - 20
+        elif self.original_direction == 'down':
+            return center_y - road_width - 20
+        elif self.original_direction == 'left':
+            return center_x + road_width + 20
+        else:  # up
+            return center_y + road_width + 20
+    
+    def is_before_stop_line(self):
+        """Check if vehicle hasn't yet reached the stop line"""
+        stop_pos = self.get_stop_position()
+        
+        if self.original_direction == 'right':
+            return self.x < stop_pos
+        elif self.original_direction == 'down':
+            return self.y < stop_pos
+        elif self.original_direction == 'left':
+            return self.x > stop_pos
+        else:  # up
+            return self.y > stop_pos
+    
+    def should_stop(self, signal, intersection):
+        """Check if vehicle should stop (for red light, vehicles ahead, or intersection conflicts)"""
+        # If already in intersection, don't stop
+        if self.in_intersection:
+            return False
+        
+        # Only check signals if we haven't passed the stop line yet
+        if self.is_before_stop_line():
+            stop_pos = self.get_stop_position()
+            
+            # Check if we're approaching the stop line
+            approaching_stop = False
+            if self.original_direction == 'right':
+                approaching_stop = self.x + self.speed >= stop_pos
+            elif self.original_direction == 'down':
+                approaching_stop = self.y + self.speed >= stop_pos
+            elif self.original_direction == 'left':
+                approaching_stop = self.x - self.speed <= stop_pos
+            else:  # up
+                approaching_stop = self.y - self.speed <= stop_pos
+            
+            if approaching_stop:
+                # Check signal permission
+                if self.turn_type == 'right':
+                    # Right turns: check turn arrow
+                    if not signal.can_turn():
+                        self.waiting_at_signal = True
+                        return True
+                elif self.turn_type == 'left':
+                    # Left turns: need main signal
+                    if not signal.can_go():
+                        self.waiting_at_signal = True
+                        return True
                 else:
-                    signals[i].signalText = signals[i].green
-                    screen.blit(greenSignal, signalCoods[i])
-            else:
-                if(signals[i].red<=10):
-                    signals[i].signalText = signals[i].red
+                    # Straight: need main signal
+                    if not signal.can_go():
+                        self.waiting_at_signal = True
+                        return True
+                
+                # Signal allows us - check if intersection is clear
+                if not intersection.can_enter(self):
+                    return True  # Wait for conflicting traffic to clear
+                
+                self.waiting_at_signal = False
+        
+        # Check for vehicle ahead in same lane
+        if self.current_lane:
+            vehicle_ahead = self.current_lane.get_vehicle_ahead(self)
+            if vehicle_ahead and self._is_too_close(vehicle_ahead):
+                return True
+        
+        return False
+    
+    def _is_too_close(self, other):
+        """Check if too close to another vehicle ahead"""
+        if self.direction == 'right':
+            return other.x > self.x and other.x - self.x < SAFE_DISTANCE + self.size
+        elif self.direction == 'down':
+            return other.y > self.y and other.y - self.y < SAFE_DISTANCE + self.size
+        elif self.direction == 'left':
+            return other.x < self.x and self.x - other.x < SAFE_DISTANCE + self.size
+        else:  # up
+            return other.y < self.y and self.y - other.y < SAFE_DISTANCE + self.size
+    
+    def _execute_turn(self):
+        """Change direction and lane for turn"""
+        center_x = SCREEN_WIDTH // 2
+        center_y = SCREEN_HEIGHT // 2
+        road_width = LANES_PER_DIRECTION * LANE_WIDTH
+        
+        if self.turn_type == 'right':
+            # Right turn
+            if self.original_direction == 'right':
+                self.direction = 'down'
+                # Move to destination lane in west half
+                self.x = center_x - road_width + self.destination_lane * LANE_WIDTH + LANE_WIDTH // 2
+            elif self.original_direction == 'down':
+                self.direction = 'left'
+                # Move to destination lane in north half
+                self.y = center_y - road_width + self.destination_lane * LANE_WIDTH + LANE_WIDTH // 2
+            elif self.original_direction == 'left':
+                self.direction = 'up'
+                # Move to destination lane in east half
+                self.x = center_x + road_width - self.destination_lane * LANE_WIDTH - LANE_WIDTH // 2
+            else:  # up
+                self.direction = 'right'
+                # Move to destination lane in south half
+                self.y = center_y + road_width - self.destination_lane * LANE_WIDTH - LANE_WIDTH // 2
+        
+        elif self.turn_type == 'left':
+            # Left turn
+            if self.original_direction == 'right':
+                self.direction = 'up'
+                # Move to destination lane in east half
+                self.x = center_x + road_width - self.destination_lane * LANE_WIDTH - LANE_WIDTH // 2
+            elif self.original_direction == 'down':
+                self.direction = 'right'
+                # Move to destination lane in south half
+                self.y = center_y + road_width - self.destination_lane * LANE_WIDTH - LANE_WIDTH // 2
+            elif self.original_direction == 'left':
+                self.direction = 'down'
+                # Move to destination lane in west half
+                self.x = center_x - road_width + self.destination_lane * LANE_WIDTH + LANE_WIDTH // 2
+            else:  # up
+                self.direction = 'left'
+                # Move to destination lane in north half
+                self.y = center_y - road_width + self.destination_lane * LANE_WIDTH + LANE_WIDTH // 2
+        
+        self.has_turned = True
+    
+    def _is_at_turn_point(self):
+        """Check if vehicle has reached the point where it should turn
+        
+        Right turns: turn early, just after crossing stop line
+        Left turns: turn late, near far side of intersection
+        """
+        center_x = SCREEN_WIDTH // 2
+        center_y = SCREEN_HEIGHT // 2
+        road_width = LANES_PER_DIRECTION * LANE_WIDTH
+        
+        if self.turn_type == 'right':
+            # Right turn - turn early
+            if self.original_direction == 'right':
+                return self.x >= center_x - road_width // 2
+            elif self.original_direction == 'down':
+                return self.y >= center_y - road_width // 2
+            elif self.original_direction == 'left':
+                return self.x <= center_x + road_width // 2
+            else:  # up
+                return self.y <= center_y + road_width // 2
+        
+        elif self.turn_type == 'left':
+            # Left turn - turn late (go to far side of intersection)
+            if self.original_direction == 'right':
+                return self.x >= center_x + road_width // 2
+            elif self.original_direction == 'down':
+                return self.y >= center_y + road_width // 2
+            elif self.original_direction == 'left':
+                return self.x <= center_x - road_width // 2
+            else:  # up
+                return self.y <= center_y - road_width // 2
+        
+        return False
+    
+    def move(self, signal, intersection, lanes):
+        """Update vehicle position
+        
+        Args:
+            signal: TrafficSignal for this vehicle's entry direction
+            intersection: Intersection object
+            lanes: Dict of Lane objects {(direction, lane_num): Lane}
+        """
+        if self.should_stop(signal, intersection):
+            return
+        
+        center_x = SCREEN_WIDTH // 2
+        center_y = SCREEN_HEIGHT // 2
+        road_width = LANES_PER_DIRECTION * LANE_WIDTH
+        
+        # Check if entering intersection
+        if not self.in_intersection and not self.is_before_stop_line():
+            self.in_intersection = True
+            intersection.enter(self)
+        
+        # Check if turning vehicle should execute turn
+        if self.turn_type != 'straight' and not self.has_turned and self._is_at_turn_point():
+            # Remove from old lane
+            if self.current_lane:
+                self.current_lane.remove_vehicle(self)
+            
+            # Execute turn (changes direction and position)
+            self._execute_turn()
+            
+            # Add to new lane
+            new_lane_key = (self.direction, self.destination_lane)
+            if new_lane_key in lanes:
+                self.current_lane = lanes[new_lane_key]
+                self.current_lane.add_vehicle(self)
+        
+        # Move based on current direction
+        if self.direction == 'right':
+            self.x += self.speed
+            if not self.crossed and self.x > center_x + road_width:
+                self.crossed = True
+                if self.in_intersection:
+                    intersection.exit(self)
+                    self.in_intersection = False
+        elif self.direction == 'down':
+            self.y += self.speed
+            if not self.crossed and self.y > center_y + road_width:
+                self.crossed = True
+                if self.in_intersection:
+                    intersection.exit(self)
+                    self.in_intersection = False
+        elif self.direction == 'left':
+            self.x -= self.speed
+            if not self.crossed and self.x < center_x - road_width:
+                self.crossed = True
+                if self.in_intersection:
+                    intersection.exit(self)
+                    self.in_intersection = False
+        else:  # up
+            self.y -= self.speed
+            if not self.crossed and self.y < center_y - road_width:
+                self.crossed = True
+                if self.in_intersection:
+                    intersection.exit(self)
+                    self.in_intersection = False
+    
+    def is_off_screen(self):
+        """Check if vehicle has left the screen"""
+        margin = 50
+        return (self.x < -margin or self.x > SCREEN_WIDTH + margin or
+                self.y < -margin or self.y > SCREEN_HEIGHT + margin)
+    
+    def draw(self, screen, font):
+        """Draw the vehicle as a perfect square with destination letter"""
+        rect = pygame.Rect(self.x - self.size // 2, self.y - self.size // 2,
+                          self.size, self.size)
+        pygame.draw.rect(screen, self.color, rect)
+        # Add border for better visibility
+        pygame.draw.rect(screen, (0, 0, 0), rect, 2)
+        
+        # Draw destination letter on the vehicle
+        label = font.render(self.destination, True, (255, 255, 255))
+        label_rect = label.get_rect(center=(self.x, self.y))
+        screen.blit(label, label_rect)
+
+# ==================== MAIN SIMULATOR CLASS ====================
+class TrafficSimulator:
+    """Main simulator managing all components"""
+    def __init__(self):
+        pygame.init()
+        self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
+        pygame.display.set_caption("Traffic Intersection Simulator")
+        self.clock = pygame.time.Clock()
+        self.font = pygame.font.Font(None, 36)
+        self.small_font = pygame.font.Font(None, 24)
+        self.vehicle_font = pygame.font.Font(None, 20)  # Font for vehicle destination labels
+        
+        # Initialize traffic signals
+        center_x = SCREEN_WIDTH // 2
+        center_y = SCREEN_HEIGHT // 2
+        road_width = LANES_PER_DIRECTION * LANE_WIDTH
+        
+        # Position signals on the right side of each lane (right-hand traffic)
+        self.signals = {
+            'right': TrafficSignal('right', (center_x - road_width - 60, center_y + road_width + 60)),  # A: bottom-left (south side)
+            'down': TrafficSignal('down', (center_x - road_width - 60, center_y - road_width - 60)),   # B: top-left (west side)
+            'left': TrafficSignal('left', (center_x + road_width + 60, center_y - road_width - 60)),   # C: top-right (north side)
+            'up': TrafficSignal('up', (center_x + road_width + 60, center_y + road_width + 60))        # D: bottom-right (east side)
+        }
+        
+        # Initial signal state is set by _signal_controller thread
+        
+        # Initialize lanes
+        self.lanes = {}
+        for direction in ['right', 'down', 'left', 'up']:
+            for lane_num in range(LANES_PER_DIRECTION):
+                lane_key = (direction, lane_num)
+                self.lanes[lane_key] = Lane(direction, lane_num)
+        
+        # Initialize intersection
+        self.intersection = Intersection()
+        
+        # Vehicle management
+        self.vehicles = []
+        self.running = True
+        
+        # Statistics for AI training
+        self.vehicles_crossed = {'right': 0, 'down': 0, 'left': 0, 'up': 0}
+        
+        # Start background threads
+        self.signal_thread = threading.Thread(target=self._signal_controller, daemon=True)
+        self.spawn_thread = threading.Thread(target=self._vehicle_spawner, daemon=True)
+        self.signal_thread.start()
+        self.spawn_thread.start()
+    
+    def _signal_controller(self):
+        """Background thread to manage signal timing using SIGNAL_PHASES configuration"""
+        current_phase_idx = 0
+        all_directions = ['right', 'down', 'left', 'up']
+        
+        # Set initial phase
+        first_phase = SIGNAL_PHASES[0]
+        first_arrows = first_phase.get('arrows', [])
+        
+        # Initialize all signals to red with arrows off
+        for direction in all_directions:
+            self.signals[direction].state = 'red'
+            self.signals[direction].turn_arrow_enabled = False
+            self.signals[direction].turn_arrow_state = 'red'
+        
+        # Turn on first phase
+        for direction in first_phase['green']:
+            self.signals[direction].state = 'green'
+            self.signals[direction].timer = first_phase['duration']
+            
+            # Enable turn arrows for directions specified in phase
+            if direction in first_arrows:
+                self.signals[direction].turn_arrow_enabled = True
+                self.signals[direction].turn_arrow_state = 'green'
+        
+        while self.running:
+            time.sleep(0.1)
+            current_phase = SIGNAL_PHASES[current_phase_idx]
+            green_directions = current_phase['green']
+            arrow_directions = current_phase.get('arrows', [])
+            
+            # Update timers for all green signals in current phase (synchronized)
+            for direction in green_directions:
+                signal = self.signals[direction]
+                # Apply simulation speed to timer (faster speed = faster signal changes)
+                signal.timer -= 0.1 * SIMULATION_SPEED
+            
+            # Check if phase needs to change (use first green signal as reference)
+            primary_signal = self.signals[green_directions[0]]
+            
+            if primary_signal.timer <= 0:
+                if primary_signal.state == 'green':
+                    # Change all green signals to yellow
+                    for direction in green_directions:
+                        self.signals[direction].state = 'yellow'
+                        self.signals[direction].timer = SIGNAL_YELLOW_TIME
+                        
+                elif primary_signal.state == 'yellow':
+                    # Change all signals to red
+                    for direction in green_directions:
+                        self.signals[direction].state = 'red'
+                        self.signals[direction].timer = SIGNAL_RED_TIME
+                        # Turn off arrows when red
+                        self.signals[direction].turn_arrow_state = 'red'
+                        
+                else:  # red - move to next phase
+                    # Move to next phase
+                    current_phase_idx = (current_phase_idx + 1) % len(SIGNAL_PHASES)
+                    next_phase = SIGNAL_PHASES[current_phase_idx]
+                    next_arrow_directions = next_phase.get('arrows', [])
+                    
+                    # Turn off all arrows first
+                    for direction in all_directions:
+                        self.signals[direction].turn_arrow_enabled = False
+                        self.signals[direction].turn_arrow_state = 'red'
+                    
+                    # Turn next phase green and enable specified arrows
+                    for direction in next_phase['green']:
+                        self.signals[direction].state = 'green'
+                        self.signals[direction].timer = next_phase['duration']
+                        
+                        # Enable arrow if specified for this direction in this phase
+                        if direction in next_arrow_directions:
+                            self.signals[direction].turn_arrow_enabled = True
+                            self.signals[direction].turn_arrow_state = 'green'
+    
+    def _vehicle_spawner(self):
+        """Background thread to spawn vehicles"""
+        while self.running:
+            # Apply simulation speed to spawn rate (faster speed = faster spawns)
+            spawn_time = (SPAWN_INTERVAL + random.uniform(-0.3, 0.3)) / SIMULATION_SPEED
+            time.sleep(spawn_time)
+            
+            # Choose random direction and lane
+            direction = random.choice(['right', 'down', 'left', 'up'])
+            lane_num = random.randint(0, LANES_PER_DIRECTION - 1)
+            
+            # Choose vehicle type based on weights
+            types = list(VEHICLE_TYPES.keys())
+            weights = [VEHICLE_TYPES[t]['spawn_weight'] for t in types]
+            v_type = random.choices(types, weights=weights)[0]
+            
+            # Create vehicle
+            vehicle = Vehicle(v_type, direction, lane_num)
+            
+            # Assign to lane
+            lane_key = (direction, lane_num)
+            if lane_key in self.lanes:
+                vehicle.current_lane = self.lanes[lane_key]
+                vehicle.current_lane.add_vehicle(vehicle)
+            
+            self.vehicles.append(vehicle)
+    
+    def draw_roads(self):
+        """Draw the road grid"""
+        self.screen.fill((100, 150, 100))  # Grass background
+        
+        center_x = SCREEN_WIDTH // 2
+        center_y = SCREEN_HEIGHT // 2
+        road_width = LANES_PER_DIRECTION * LANE_WIDTH
+        
+        # Draw horizontal road
+        pygame.draw.rect(self.screen, ROAD_COLOR,
+                        (0, center_y - road_width, SCREEN_WIDTH, road_width * 2))
+        
+        # Draw vertical road
+        pygame.draw.rect(self.screen, ROAD_COLOR,
+                        (center_x - road_width, 0, road_width * 2, SCREEN_HEIGHT))
+        
+        # Draw lane dividers
+        for i in range(1, LANES_PER_DIRECTION):
+            # Horizontal lanes
+            y = center_y - road_width + i * LANE_WIDTH
+            for x in range(0, SCREEN_WIDTH, 40):
+                pygame.draw.line(self.screen, LANE_LINE_COLOR, (x, y), (x + 20, y), 2)
+            y = center_y + i * LANE_WIDTH
+            for x in range(0, SCREEN_WIDTH, 40):
+                pygame.draw.line(self.screen, LANE_LINE_COLOR, (x, y), (x + 20, y), 2)
+            
+            # Vertical lanes
+            x = center_x - road_width + i * LANE_WIDTH
+            for y in range(0, SCREEN_HEIGHT, 40):
+                pygame.draw.line(self.screen, LANE_LINE_COLOR, (x, y), (x, y + 20), 2)
+            x = center_x + i * LANE_WIDTH
+            for y in range(0, SCREEN_HEIGHT, 40):
+                pygame.draw.line(self.screen, LANE_LINE_COLOR, (x, y), (x, y + 20), 2)
+        
+        # Draw stop lines (on right side of road for Polish/right-hand traffic)
+        # Right direction (A lane) - vehicles on SOUTH half
+        pygame.draw.line(self.screen, STOP_LINE_COLOR,
+                        (center_x - road_width - 10, center_y),
+                        (center_x - road_width - 10, center_y + road_width), 5)
+        # Down direction (B lane) - vehicles on WEST half
+        pygame.draw.line(self.screen, STOP_LINE_COLOR,
+                        (center_x - road_width, center_y - road_width - 10),
+                        (center_x, center_y - road_width - 10), 5)
+        # Left direction (C lane) - vehicles on NORTH half
+        pygame.draw.line(self.screen, STOP_LINE_COLOR,
+                        (center_x + road_width + 10, center_y - road_width),
+                        (center_x + road_width + 10, center_y), 5)
+        # Up direction (D lane) - vehicles on EAST half
+        pygame.draw.line(self.screen, STOP_LINE_COLOR,
+                        (center_x, center_y + road_width + 10),
+                        (center_x + road_width, center_y + road_width + 10), 5)
+        
+        # Draw lane labels (A-D) at road entry points
+        # A - West entry (for 'right' direction vehicles on SOUTH half)
+        label_a = self.font.render('A', True, (255, 255, 255))
+        self.screen.blit(label_a, (50, center_y + road_width // 2 - 10))
+        # B - North entry (for 'down' direction vehicles on WEST half)
+        label_b = self.font.render('B', True, (255, 255, 255))
+        self.screen.blit(label_b, (center_x - road_width // 2 - 10, 50))
+        # C - East entry (for 'left' direction vehicles on NORTH half)
+        label_c = self.font.render('C', True, (255, 255, 255))
+        self.screen.blit(label_c, (SCREEN_WIDTH - 70, center_y - road_width // 2 - 10))
+        # D - South entry (for 'up' direction vehicles on EAST half)
+        label_d = self.font.render('D', True, (255, 255, 255))
+        self.screen.blit(label_d, (center_x + road_width // 2 - 10, SCREEN_HEIGHT - 70))
+    
+    def draw_signals(self):
+        """Draw traffic signals with countdown timers"""
+        for direction, signal in self.signals.items():
+            x, y = signal.position
+            
+            # Draw main signal
+            pygame.draw.circle(self.screen, (0, 0, 0), (x, y), SIGNAL_RADIUS + 3)
+            pygame.draw.circle(self.screen, signal.get_color(), (x, y), SIGNAL_RADIUS)
+            
+            # Draw turn arrow if enabled
+            if signal.turn_arrow_enabled:
+                arrow_x = x + 40
+                pygame.draw.circle(self.screen, (0, 0, 0), (arrow_x, y), SIGNAL_RADIUS // 2 + 2)
+                pygame.draw.circle(self.screen, signal.get_turn_color(), (arrow_x, y), SIGNAL_RADIUS // 2)
+            
+            # Draw countdown timer
+            timer_text = self.small_font.render(f"{signal.timer:.1f}s", True, (255, 255, 255))
+            self.screen.blit(timer_text, (x - 20, y + 30))
+    
+    def draw_stats(self):
+        """Draw statistics for AI training"""
+        y_offset = 10
+        for direction, count in self.vehicles_crossed.items():
+            lane_label = LANE_LABELS[direction]
+            text = self.small_font.render(f"Lane {lane_label} ({direction}): {count} crossed", True, (255, 255, 255))
+            self.screen.blit(text, (10, y_offset))
+            y_offset += 25
+        
+        # Draw legend for destination labels
+        y_offset += 10
+        legend_title = self.small_font.render("Destination Labels:", True, (255, 255, 0))
+        self.screen.blit(legend_title, (10, y_offset))
+        y_offset += 20
+        legend = self.small_font.render("A=West  B=North  C=East  D=South", True, (255, 255, 255))
+        self.screen.blit(legend, (10, y_offset))
+        
+        # Draw controls
+        controls = self.small_font.render("Press 1-4 to toggle turn arrows: 1=A 2=B 3=C 4=D", True, (255, 255, 255))
+        self.screen.blit(controls, (10, SCREEN_HEIGHT - 30))
+    
+    def update(self):
+        """Update all vehicles"""
+        for vehicle in self.vehicles[:]:
+            # Use original_direction for signal checking (which lane the vehicle entered from)
+            signal = self.signals[vehicle.original_direction]
+            vehicle.move(signal, self.intersection, self.lanes)
+            
+            # Track crossed vehicles (by their original entry direction)
+            if vehicle.crossed and vehicle.original_direction in self.vehicles_crossed:
+                # Only count once
+                if hasattr(vehicle, 'counted'):
+                    pass
                 else:
-                    signals[i].signalText = "---"
-                screen.blit(redSignal, signalCoods[i])
-        signalTexts = ["","","",""]
+                    self.vehicles_crossed[vehicle.original_direction] += 1
+                    vehicle.counted = True
+            
+            # Remove vehicles that left the screen
+            if vehicle.is_off_screen():
+                # Remove from lane
+                if vehicle.current_lane:
+                    vehicle.current_lane.remove_vehicle(vehicle)
+                # Remove from intersection if still there
+                if vehicle.in_intersection:
+                    self.intersection.exit(vehicle)
+                # Remove from vehicles list
+                self.vehicles.remove(vehicle)
+    
+    def run(self):
+        """Main game loop"""
+        while self.running:
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    self.running = False
+                elif event.type == pygame.KEYDOWN:
+                    # Toggle turn arrows with keys 1-4
+                    if event.key == pygame.K_1:
+                        self.signals['right'].turn_arrow_enabled = not self.signals['right'].turn_arrow_enabled
+                    elif event.key == pygame.K_2:
+                        self.signals['down'].turn_arrow_enabled = not self.signals['down'].turn_arrow_enabled
+                    elif event.key == pygame.K_3:
+                        self.signals['left'].turn_arrow_enabled = not self.signals['left'].turn_arrow_enabled
+                    elif event.key == pygame.K_4:
+                        self.signals['up'].turn_arrow_enabled = not self.signals['up'].turn_arrow_enabled
+            
+            # Update and draw
+            self.update()
+            self.draw_roads()
+            
+            for vehicle in self.vehicles:
+                vehicle.draw(self.screen, self.vehicle_font)
+            
+            self.draw_signals()
+            self.draw_stats()
+            
+            pygame.display.flip()
+            self.clock.tick(FPS)
+        
+        pygame.quit()
 
-        # display signal timer
-        for i in range(0,noOfSignals):  
-            signalTexts[i] = font.render(str(signals[i].signalText), True, white, black)
-            screen.blit(signalTexts[i],signalTimerCoods[i])
-
-        # display the vehicles
-        for vehicle in simulation:  
-            screen.blit(vehicle.image, [vehicle.x, vehicle.y])
-            vehicle.move()
-        pygame.display.update()
-
-
-Main()
+# ==================== MAIN ENTRY POINT ====================
+if __name__ == "__main__":
+    simulator = TrafficSimulator()
+    simulator.run()
