@@ -12,7 +12,7 @@ FPS = 60
 
 # Simulation speed multiplier (affects vehicle speed and signal timing)
 # 1.0 = normal speed, 2.0 = 2x speed, 0.5 = half speed
-SIMULATION_SPEED = 2.0
+SIMULATION_SPEED = 5.0
 
 # Road settings
 LANES_PER_DIRECTION = 2
