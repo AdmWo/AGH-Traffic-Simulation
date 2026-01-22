@@ -25,9 +25,9 @@ from simulation import (
     LANES_PER_DIRECTION, LANE_WIDTH
 )
 
-# Try to import DQN
+# Try to import DQN from unified training
 try:
-    from train_dqn_v2 import DQN, HIDDEN_SIZE, ACTION_CONFIGS, apply_action
+    from train_unified import UnifiedDQN as DQN, HIDDEN_SIZE, MAX_STATE_SIZE, MAX_ACTION_SIZE
     DQN_AVAILABLE = True
 except ImportError:
     DQN_AVAILABLE = False
@@ -131,8 +131,9 @@ class DemoPanel:
         slider_y = y + 35
         for i, label in enumerate(spawn_points):
             key = self.spawn_keys[i]
+            # Slider 0-100% maps to spawn rate 0-8000% (so 25% slider = default spawn rate)
             self.sliders[key] = Slider(x + 10, slider_y, width - 30, 14, label,
-                                       min_val=0.0, max_val=1.0, initial=0.5)
+                                       min_val=0.0, max_val=1.0, initial=0.25)
             slider_y += 45
         
         self.stats_y = slider_y + 15
@@ -142,17 +143,26 @@ class DemoPanel:
             slider.handle_event(event)
     
     def get_spawn_rates(self):
-        """Get spawn rates for the level's spawn points."""
+        """Get spawn rates for the level's spawn points.
+        
+        Spawner now checks every 50ms and spawns from ALL entries.
+        Rate = how many cars per entry per cycle.
+        At 25% = 5 cars/entry/50ms = FAST
+        At 100% = 20 cars/entry/50ms = CHAOS
+        """
         rates = {}
         for key, slider in self.sliders.items():
+            # Scale: slider 0-1.0 → spawn rate 0-20
+            scaled_rate = slider.value * 0.05
+            
             # Map to the segment IDs used by the level
             if self.level_num == 1:
                 # Level 1 uses direction names
                 direction_map = {'A': 'right', 'B': 'down', 'C': 'left', 'D': 'up'}
-                rates[f"entry_{direction_map[key]}"] = slider.value
+                rates[f"entry_{direction_map[key]}"] = scaled_rate
             else:
                 # Level 2 and 3 use entry_X format
-                rates[f"entry_{key}"] = slider.value
+                rates[f"entry_{key}"] = scaled_rate
         return rates
     
     def draw(self, screen, font, metrics, action_name="", ai_active=True):
@@ -223,9 +233,10 @@ class DemoPanel:
         instructions = [
             "Drag sliders to change",
             "traffic spawn rates.",
+            "(Max = CHAOS MODE!)",
             "",
             "L: Switch level",
-            "R: Reset all to 50%",
+            "R: Reset to normal (25%)",
             "M: Max all (stress test)",
             "Z: Zero all",
             "ESC: Exit",
@@ -320,11 +331,7 @@ def run_demo(level_num=1, model_file=None):
     frames_per_decision = 45  # Make decision every 0.75 seconds for more responsive signals
     
     # Apply initial action immediately
-    if level_num == 1 and DQN_AVAILABLE:
-        apply_action(simulator, 0)
-        action_name = ACTION_CONFIGS.get(0, {}).get('name', 'Action 0')
-    else:
-        action_name = simulator.apply_level_action(0)
+    action_name = simulator.apply_level_action(0)
     
     while running:
         for event in pygame.event.get():
@@ -358,9 +365,9 @@ def run_demo(level_num=1, model_file=None):
                         action_names = simulator.current_level.action_names
                     print(f"  Switched to Level {level_num}")
                 elif event.key == pygame.K_r:
-                    # Reset sliders to 50%
+                    # Reset sliders to 25% (normal spawn rate)
                     for slider in panel.sliders.values():
-                        slider.value = 0.5
+                        slider.value = 0.25
                         slider._update_knob()
                 elif event.key == pygame.K_m:
                     # Max all sliders (stress test)

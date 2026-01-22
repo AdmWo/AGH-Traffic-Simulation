@@ -95,8 +95,8 @@ SIGNAL_PHASES = [
     {'duration': 15, 'green': ['down', 'up'], 'arrows': ['left']}
 ]
 
-# How often new cars spawn (higher = less traffic)
-SPAWN_INTERVAL = 1.5
+# How often new cars spawn (lower = more frequent spawn checks)
+SPAWN_INTERVAL = 0.05  # Check every 50ms for fast spawning
 
 # Per-lane spawn probabilities - lets you create asymmetric traffic patterns
 # Format: 'Direction_Lane_X' where X is the lane number (0 = rightmost)
@@ -866,7 +866,7 @@ class TrafficSimulator:
     def _vehicle_spawner(self):
         """Runs in background, periodically adding new vehicles based on current level."""
         while self.running:
-            spawn_time = (SPAWN_INTERVAL + random.uniform(-0.3, 0.3)) / SIMULATION_SPEED
+            spawn_time = max(0.01, SPAWN_INTERVAL / SIMULATION_SPEED)
             time.sleep(spawn_time)
             
             if self.current_level_num == 1:
@@ -879,52 +879,43 @@ class TrafficSimulator:
                 self._spawn_level1_vehicle()
     
     def _spawn_level1_vehicle(self):
-        """Spawn a vehicle for Level 1 (single intersection)."""
-        direction = random.choice(['right', 'down', 'left', 'up'])
-        lane_num = random.randint(0, LANES_PER_DIRECTION - 1)
-        
-        # Check spawn probability from level segments (for slider control)
-        spawn_rate = 0.5
-        if self.current_level:
-            seg_id = f"entry_{direction}"
-            seg = self.current_level.segments.get(seg_id)
-            if seg:
-                spawn_rate = seg.spawn_rate
-        
-        if random.random() > spawn_rate:
-            return
-        
-        # Create vehicle
-        types = list(VEHICLE_TYPES.keys())
-        weights = [VEHICLE_TYPES[t]['spawn_weight'] for t in types]
-        v_type = random.choices(types, weights=weights)[0]
-        
-        vehicle = Vehicle(v_type, direction, lane_num, level=1)
-        
-        lane_key = (direction, lane_num)
-        if lane_key in self.lanes:
-            vehicle.current_lane = self.lanes[lane_key]
-            vehicle.current_lane.add_vehicle(vehicle)
-        
-        self.vehicles.append(vehicle)
+        """Spawn vehicle(s) for Level 1 (single intersection)."""
+        # Try each direction
+        for direction in ['right', 'down', 'left', 'up']:
+            lane_num = random.randint(0, LANES_PER_DIRECTION - 1)
+            
+            # Check spawn probability from level segments (for slider control)
+            spawn_rate = 0.5
+            if self.current_level:
+                seg_id = f"entry_{direction}"
+                seg = self.current_level.segments.get(seg_id)
+                if seg:
+                    spawn_rate = seg.spawn_rate
+            
+            # Spawn multiple cars if rate > 1 (rate of 2.0 = spawn 2 cars per check)
+            num_to_spawn = int(spawn_rate) + (1 if random.random() < (spawn_rate % 1) else 0)
+            
+            for _ in range(num_to_spawn):
+                # Create vehicle
+                types = list(VEHICLE_TYPES.keys())
+                weights = [VEHICLE_TYPES[t]['spawn_weight'] for t in types]
+                v_type = random.choices(types, weights=weights)[0]
+                
+                lane_num = random.randint(0, LANES_PER_DIRECTION - 1)
+                vehicle = Vehicle(v_type, direction, lane_num, level=1)
+                
+                lane_key = (direction, lane_num)
+                if lane_key in self.lanes:
+                    vehicle.current_lane = self.lanes[lane_key]
+                    vehicle.current_lane.add_vehicle(vehicle)
+                
+                self.vehicles.append(vehicle)
     
     def _spawn_level2_vehicle(self):
-        """Spawn a vehicle for Level 2 (two intersections)."""
+        """Spawn vehicle(s) for Level 2 (two intersections)."""
         # Level 2 spawn points: A (west), B1 (north-left), D1 (south-left), 
         #                       C (east), B2 (north-right), D2 (south-right)
         spawn_points = ['A', 'B1', 'D1', 'C', 'B2', 'D2']
-        spawn_point = random.choice(spawn_points)
-        lane_num = random.randint(0, LANES_PER_DIRECTION - 1)
-        
-        # Get spawn rate from level
-        spawn_rate = 0.5
-        if self.current_level:
-            seg_id = f"entry_{spawn_point}"
-            if seg_id in self.current_level.segments:
-                spawn_rate = self.current_level.segments[seg_id].spawn_rate
-        
-        if random.random() > spawn_rate:
-            return
         
         # Map spawn point to direction and intersection
         spawn_info = {
@@ -936,43 +927,42 @@ class TrafficSimulator:
             'D2': {'direction': 'up',    'int_x': 1000},
         }
         
-        info = spawn_info[spawn_point]
-        types = list(VEHICLE_TYPES.keys())
-        weights = [VEHICLE_TYPES[t]['spawn_weight'] for t in types]
-        v_type = random.choices(types, weights=weights)[0]
-        
-        vehicle = Vehicle(v_type, info['direction'], lane_num, level=2, 
-                         spawn_point=spawn_point, intersection_x=info['int_x'])
-        
-        lane_key = (info['direction'], lane_num)
-        if lane_key in self.lanes:
-            vehicle.current_lane = self.lanes[lane_key]
-            vehicle.current_lane.add_vehicle(vehicle)
-        
-        self.vehicles.append(vehicle)
+        for spawn_point in spawn_points:
+            # Get spawn rate from level
+            spawn_rate = 0.5
+            if self.current_level:
+                seg_id = f"entry_{spawn_point}"
+                if seg_id in self.current_level.segments:
+                    spawn_rate = self.current_level.segments[seg_id].spawn_rate
+            
+            # Spawn multiple cars if rate > 1
+            num_to_spawn = int(spawn_rate) + (1 if random.random() < (spawn_rate % 1) else 0)
+            
+            for _ in range(num_to_spawn):
+                lane_num = random.randint(0, LANES_PER_DIRECTION - 1)
+                info = spawn_info[spawn_point]
+                types = list(VEHICLE_TYPES.keys())
+                weights = [VEHICLE_TYPES[t]['spawn_weight'] for t in types]
+                v_type = random.choices(types, weights=weights)[0]
+                
+                vehicle = Vehicle(v_type, info['direction'], lane_num, level=2, 
+                                 spawn_point=spawn_point, intersection_x=info['int_x'])
+                
+                lane_key = (info['direction'], lane_num)
+                if lane_key in self.lanes:
+                    vehicle.current_lane = self.lanes[lane_key]
+                    vehicle.current_lane.add_vehicle(vehicle)
+                
+                self.vehicles.append(vehicle)
     
     def _spawn_level3_vehicle(self):
-        """Spawn a vehicle for Level 3 (2x2 grid)."""
+        """Spawn vehicle(s) for Level 3 (2x2 grid)."""
         # Double check we're on Level 3
         if self.current_level_num != 3:
             return
         
         # Level 3 spawn points around the edges
         spawn_points = ['N1', 'N2', 'E1', 'E2', 'S1', 'S2', 'W1', 'W2']
-        spawn_point = random.choice(spawn_points)
-        lane_num = random.randint(0, LANES_PER_DIRECTION - 1)
-        
-        # Get spawn rate from level - default to 0.5 if level not ready
-        spawn_rate = 0.5
-        level = self.current_level
-        if level and hasattr(level, 'segments'):
-            seg_id = f"entry_{spawn_point}"
-            seg = level.segments.get(seg_id)
-            if seg:
-                spawn_rate = seg.spawn_rate
-        
-        if random.random() > spawn_rate:
-            return
         
         # Grid positions
         left_x, right_x = 400, 1000
@@ -990,20 +980,35 @@ class TrafficSimulator:
             'W2': {'direction': 'right', 'x': -50,     'y': bottom_y},
         }
         
-        info = spawn_info[spawn_point]
-        types = list(VEHICLE_TYPES.keys())
-        weights = [VEHICLE_TYPES[t]['spawn_weight'] for t in types]
-        v_type = random.choices(types, weights=weights)[0]
-        
-        vehicle = Vehicle(v_type, info['direction'], lane_num, level=3,
-                         spawn_point=spawn_point, spawn_x=info['x'], spawn_y=info['y'])
-        
-        lane_key = (info['direction'], lane_num)
-        if lane_key in self.lanes:
-            vehicle.current_lane = self.lanes[lane_key]
-            vehicle.current_lane.add_vehicle(vehicle)
-        
-        self.vehicles.append(vehicle)
+        for spawn_point in spawn_points:
+            # Get spawn rate from level - default to 0.5 if level not ready
+            spawn_rate = 0.5
+            level = self.current_level
+            if level and hasattr(level, 'segments'):
+                seg_id = f"entry_{spawn_point}"
+                seg = level.segments.get(seg_id)
+                if seg:
+                    spawn_rate = seg.spawn_rate
+            
+            # Spawn multiple cars if rate > 1
+            num_to_spawn = int(spawn_rate) + (1 if random.random() < (spawn_rate % 1) else 0)
+            
+            for _ in range(num_to_spawn):
+                lane_num = random.randint(0, LANES_PER_DIRECTION - 1)
+                info = spawn_info[spawn_point]
+                types = list(VEHICLE_TYPES.keys())
+                weights = [VEHICLE_TYPES[t]['spawn_weight'] for t in types]
+                v_type = random.choices(types, weights=weights)[0]
+                
+                vehicle = Vehicle(v_type, info['direction'], lane_num, level=3,
+                                 spawn_point=spawn_point, spawn_x=info['x'], spawn_y=info['y'])
+                
+                lane_key = (info['direction'], lane_num)
+                if lane_key in self.lanes:
+                    vehicle.current_lane = self.lanes[lane_key]
+                    vehicle.current_lane.add_vehicle(vehicle)
+                
+                self.vehicles.append(vehicle)
     
     def draw_roads(self):
         """Draw the intersection and roads based on current level."""

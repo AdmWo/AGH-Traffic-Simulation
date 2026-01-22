@@ -160,10 +160,12 @@ def run_episode(simulator, policy_net, target_net, memory, optimizer,
     simulator.switch_level(level_num)
     
     # Set moderate spawn rates
+    # Randomize spawn rates: very light (0.01) to heavy (0.5)
+    # This helps AI learn to handle all traffic scenarios
     if simulator.current_level:
         for seg_id, seg in simulator.current_level.segments.items():
             if seg_id.startswith('entry_'):
-                seg.spawn_rate = random.uniform(0.3, 0.8)
+                seg.spawn_rate = random.uniform(0.01, 0.5)
     
     # Spawn initial vehicles directly (no sleep!)
     spawn_vehicles_fast(simulator, count=8)
@@ -406,10 +408,10 @@ def test(model_file='dqn_unified_best.pth'):
         
         simulator = TrafficSimulator(level=level_num, headless=True)
         
-        # Set spawn rates
+        # Set spawn rates (mid-range for consistent testing)
         for seg_id, seg in simulator.current_level.segments.items():
             if seg_id.startswith('entry_'):
-                seg.spawn_rate = 0.6
+                seg.spawn_rate = 0.25
         
         # Spawn initial vehicles
         spawn_vehicles_fast(simulator, count=8)
