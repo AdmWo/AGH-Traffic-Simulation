@@ -165,7 +165,7 @@ class DemoPanel:
                 rates[f"entry_{key}"] = scaled_rate
         return rates
     
-    def draw(self, screen, font, metrics, action_name="", ai_active=True):
+    def draw(self, screen, font, metrics, action_name="", control_mode="ai"):
         # Panel background
         panel_rect = pygame.Rect(self.x, self.y, self.width, 700)
         pygame.draw.rect(screen, (25, 25, 35), panel_rect)
@@ -184,10 +184,20 @@ class DemoPanel:
                         (self.x + 10, self.stats_y - 8),
                         (self.x + self.width - 10, self.stats_y - 8), 2)
         
-        # AI Status
-        ai_color = (0, 255, 100) if ai_active else (255, 150, 50)
-        ai_text = "AI: ACTIVE" if ai_active else "AI: RANDOM"
-        text = font.render(ai_text, True, ai_color)
+        # Control Mode Status
+        mode_colors = {
+            'ai': (0, 255, 100),      # Green for AI
+            'random': (255, 150, 50),  # Orange for Random
+            'fixed': (150, 150, 255)   # Blue for Fixed
+        }
+        mode_texts = {
+            'ai': "MODE: AI (trained)",
+            'random': "MODE: RANDOM",
+            'fixed': "MODE: FIXED TIMING"
+        }
+        mode_color = mode_colors.get(control_mode, (200, 200, 200))
+        mode_text = mode_texts.get(control_mode, "MODE: ???")
+        text = font.render(mode_text, True, mode_color)
         screen.blit(text, (self.x + 10, self.stats_y))
         
         # Current action
@@ -233,11 +243,11 @@ class DemoPanel:
         instructions = [
             "Drag sliders to change",
             "traffic spawn rates.",
-            "(Max = CHAOS MODE!)",
             "",
+            "A: Cycle control mode",
             "L: Switch level",
-            "R: Reset to normal (25%)",
-            "M: Max all (stress test)",
+            "R: Reset sliders (25%)",
+            "M: Max all (stress)",
             "Z: Zero all",
             "ESC: Exit",
         ]
@@ -323,6 +333,17 @@ def run_demo(level_num=1, model_file=None):
     else:
         action_names = [f"Action {i}" for i in range(action_size)]
     
+    # Control modes: 'ai', 'random', 'fixed'
+    # AI = trained model, Random = random actions, Fixed = simple cycling
+    control_modes = ['ai', 'random', 'fixed']
+    current_mode_idx = 0 if use_ai else 1  # Start with AI if available, else random
+    control_mode = control_modes[current_mode_idx]
+    
+    # Fixed timing state
+    fixed_action_idx = 0
+    fixed_timer = 0
+    fixed_phase_duration = 90  # frames per phase (1.5 seconds at 60fps)
+    
     # Main loop
     running = True
     action = 0
@@ -379,6 +400,15 @@ def run_demo(level_num=1, model_file=None):
                     for slider in panel.sliders.values():
                         slider.value = 0.0
                         slider._update_knob()
+                elif event.key == pygame.K_a:
+                    # Cycle control mode: AI -> Random -> Fixed -> AI
+                    current_mode_idx = (current_mode_idx + 1) % len(control_modes)
+                    control_mode = control_modes[current_mode_idx]
+                    # Skip AI mode if no model loaded
+                    if control_mode == 'ai' and not use_ai:
+                        current_mode_idx = (current_mode_idx + 1) % len(control_modes)
+                        control_mode = control_modes[current_mode_idx]
+                    print(f"  Control mode: {control_mode.upper()}")
             
             panel.handle_event(event)
         
@@ -389,12 +419,22 @@ def run_demo(level_num=1, model_file=None):
                 if seg_id in simulator.current_level.segments:
                     simulator.current_level.segments[seg_id].spawn_rate = rate
         
-        # Make AI decision periodically
-        if frame % frames_per_decision == 0:
-            # Get valid action count for current level
-            valid_actions = level_info['action_count']
-            
-            if use_ai and policy_net:
+        # Get valid action count for current level
+        valid_actions = level_info['action_count']
+        
+        # Control logic based on mode
+        if control_mode == 'fixed':
+            # Fixed timing: cycle through actions at fixed intervals
+            fixed_timer += 1
+            if fixed_timer >= fixed_phase_duration:
+                fixed_timer = 0
+                fixed_action_idx = (fixed_action_idx + 1) % valid_actions
+                action = fixed_action_idx
+                action_name = simulator.apply_level_action(action)
+        elif frame % frames_per_decision == 0:
+            # AI or Random mode - make decision periodically
+            if control_mode == 'ai' and use_ai and policy_net:
+                # AI mode: use trained model
                 state = np.array(simulator.get_state(), dtype=np.float32)
                 # Pad or truncate state if needed
                 if len(state) < state_size:
@@ -415,6 +455,7 @@ def run_demo(level_num=1, model_file=None):
                     # Ensure action is valid for this level
                     action = min(action, valid_actions - 1)
             else:
+                # Random mode: pick random action
                 action = np.random.randint(0, valid_actions)
             
             # Apply action using level's action system
@@ -439,7 +480,7 @@ def run_demo(level_num=1, model_file=None):
         
         # Draw panel
         metrics = simulator.get_metrics()
-        panel.draw(simulator.screen, simulator.small_font, metrics, action_name, use_ai)
+        panel.draw(simulator.screen, simulator.small_font, metrics, action_name, control_mode)
         
         pygame.display.flip()
         simulator.clock.tick(60)

@@ -30,14 +30,16 @@ print(f"Using device: {device}")
 
 # Hyperparameters
 GAMMA = 0.99
-LEARNING_RATE = 0.0005
-BATCH_SIZE = 64
-MEMORY_SIZE = 50000
+LEARNING_RATE = 0.001          # Higher initial LR (will decay)
+BATCH_SIZE = 128               # Larger batch for stability
+MEMORY_SIZE = 100000           # More memory for diverse experiences
 TARGET_UPDATE = 10
 EPSILON_START = 1.0
-EPSILON_END = 0.05
-EPSILON_DECAY = 0.997
+EPSILON_END = 0.01             # Lower final epsilon for better exploitation
+EPSILON_DECAY = 0.9975         # Slower decay to reach 0.01 by ~1500 episodes
 HIDDEN_SIZE = 256
+LR_DECAY_STEP = 100            # Decay LR every N episodes
+LR_DECAY_GAMMA = 0.9           # LR multiplier at each decay step
 
 # Maximum sizes across all levels (Level 3 is largest)
 MAX_STATE_SIZE = 60   # Padded to be safe
@@ -107,36 +109,42 @@ def get_valid_actions(level_num):
 
 
 def compute_reward(simulator, prev_metrics, action, prev_action):
-    """Compute reward based on traffic flow improvement."""
+    """Compute reward based on traffic flow - THROUGHPUT FOCUSED."""
     metrics = simulator.get_metrics()
     
-    # Improvements are good
-    wait_delta = prev_metrics.get('avg_wait_time', 0) - metrics.get('avg_wait_time', 0)
+    # Calculate deltas
     throughput_delta = metrics.get('total_throughput', 0) - prev_metrics.get('total_throughput', 0)
-    queue_delta = sum(prev_metrics.get('queue_lengths', {}).values()) - sum(metrics.get('queue_lengths', {}).values())
+    wait_delta = prev_metrics.get('avg_wait_time', 0) - metrics.get('avg_wait_time', 0)
+    waiting_now = metrics.get('waiting_vehicles', 0)
+    waiting_prev = prev_metrics.get('waiting_vehicles', 0)
+    waiting_delta = waiting_prev - waiting_now  # Positive if fewer waiting
     
     reward = 0.0
     
-    # Reward for reducing wait times
+    # PRIMARY: Strong reward for throughput (cars passing through)
+    # This is the main goal - get cars through the intersection
+    reward += throughput_delta * 3.0  # Very strong throughput bonus
+    
+    # SECONDARY: Reward for reducing waiting vehicles
+    reward += waiting_delta * 0.3
+    
+    # TERTIARY: Small reward for reducing average wait time
     reward += wait_delta * 0.1
     
-    # Reward for throughput
-    reward += throughput_delta * 0.5
+    # Small bonus just for having any throughput (encourages green lights)
+    if throughput_delta > 0:
+        reward += 0.5  # Bonus for any cars getting through
     
-    # Reward for reducing queues
-    reward += queue_delta * 0.05
-    
-    # Small penalty for changing signals too often (stability)
+    # Minimal penalty for changing signals (allow adaptation)
     if action != prev_action:
-        reward -= 0.1
+        reward -= 0.02  # Very small penalty, don't discourage needed changes
     
-    # Penalty for too many waiting vehicles
-    waiting = metrics.get('waiting_vehicles', 0)
-    if waiting > 10:
-        reward -= waiting * 0.02
+    # Gentle penalty for congestion (many waiting vehicles)
+    if waiting_now > 20:
+        reward -= (waiting_now - 20) * 0.01  # Only penalize severe congestion
     
     # Clip reward to reasonable range
-    reward = np.clip(reward, -5, 5)
+    reward = np.clip(reward, -10, 10)
     
     return reward, metrics
 
@@ -262,16 +270,18 @@ def train_step(policy_net, target_net, memory, optimizer):
     optimizer.step()
 
 
-def train(episodes=500, steps_per_episode=80):
+def train(episodes=1500, steps_per_episode=100):
     """Train the unified model across all levels."""
     
     print("\n" + "=" * 60)
-    print("  UNIFIED MULTI-LEVEL DQN TRAINING")
+    print("  UNIFIED MULTI-LEVEL DQN TRAINING (IMPROVED)")
     print("=" * 60)
     print(f"  Episodes: {episodes}")
     print(f"  Steps per episode: {steps_per_episode}")
     print(f"  State size: {MAX_STATE_SIZE}, Action size: {MAX_ACTION_SIZE}")
     print(f"  Training on: Level 1, Level 2, Level 3")
+    print(f"  Epsilon: {EPSILON_START} -> {EPSILON_END} (decay: {EPSILON_DECAY})")
+    print(f"  Learning rate: {LEARNING_RATE} (decay every {LR_DECAY_STEP} eps)")
     print("=" * 60)
     
     # Create networks
@@ -281,6 +291,7 @@ def train(episodes=500, steps_per_episode=80):
     target_net.eval()
     
     optimizer = optim.Adam(policy_net.parameters(), lr=LEARNING_RATE)
+    scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=LR_DECAY_STEP, gamma=LR_DECAY_GAMMA)
     memory = ReplayMemory(MEMORY_SIZE)
     
     epsilon = EPSILON_START
@@ -312,6 +323,9 @@ def train(episodes=500, steps_per_episode=80):
             # Decay epsilon
             epsilon = max(EPSILON_END, epsilon * EPSILON_DECAY)
             
+            # Decay learning rate
+            scheduler.step()
+            
             # Update target network
             if episode % TARGET_UPDATE == 0:
                 target_net.load_state_dict(policy_net.state_dict())
@@ -319,22 +333,23 @@ def train(episodes=500, steps_per_episode=80):
             # Progress report every 10 episodes
             if episode % 10 == 0:
                 avg_rewards = {
-                    lvl: np.mean(rews[-10:]) if rews else 0 
+                    lvl: np.mean(rews[-30:]) if rews else 0  # Longer window for stability
                     for lvl, rews in reward_history.items()
                 }
                 overall_avg = np.mean(list(avg_rewards.values()))
                 avg_ep_time = np.mean(episode_times[-10:]) if episode_times else 0
                 elapsed = time.time() - start_time
                 eta = avg_ep_time * (episodes - episode) if avg_ep_time > 0 else 0
+                current_lr = scheduler.get_last_lr()[0]
                 
                 print(f"Ep {episode:4d}/{episodes} | L{level_num} | "
                       f"R:{reward:6.2f} | "
                       f"Avg L1:{avg_rewards[1]:5.1f} L2:{avg_rewards[2]:5.1f} L3:{avg_rewards[3]:5.1f} | "
-                      f"Eps:{epsilon:.2f} | "
-                      f"{avg_ep_time:.1f}s/ep | ETA:{eta/60:.1f}m")
+                      f"Eps:{epsilon:.3f} LR:{current_lr:.5f} | "
+                      f"ETA:{eta/60:.1f}m")
                 
-                # Save best model
-                if overall_avg > best_avg_reward and episode > 30:
+                # Save best model (wait until some exploration done)
+                if overall_avg > best_avg_reward and episode > 100:
                     best_avg_reward = overall_avg
                     torch.save({
                         'policy_net': policy_net.state_dict(),
@@ -348,6 +363,20 @@ def train(episodes=500, steps_per_episode=80):
                         'unified': True,
                     }, 'dqn_unified_best.pth')
                     print(f"  -> Saved best model (avg: {overall_avg:.2f})")
+                
+                # Periodic checkpoint every 200 episodes
+                if episode > 0 and episode % 200 == 0:
+                    torch.save({
+                        'policy_net': policy_net.state_dict(),
+                        'target_net': target_net.state_dict(),
+                        'optimizer': optimizer.state_dict(),
+                        'episode': episode,
+                        'epsilon': epsilon,
+                        'state_size': MAX_STATE_SIZE,
+                        'action_size': MAX_ACTION_SIZE,
+                        'unified': True,
+                    }, f'dqn_unified_checkpoint_{episode}.pth')
+                    print(f"  -> Checkpoint saved at episode {episode}")
     
     except KeyboardInterrupt:
         print("\nTraining interrupted by user")
@@ -456,11 +485,11 @@ def test(model_file='dqn_unified_best.pth'):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='Unified Multi-Level DQN Training')
-    parser.add_argument('--episodes', '-e', type=int, default=300,
-                        help='Number of training episodes')
-    parser.add_argument('--steps', '-s', type=int, default=80,
-                        help='Steps per episode')
+    parser = argparse.ArgumentParser(description='Unified Multi-Level DQN Training (Improved)')
+    parser.add_argument('--episodes', '-e', type=int, default=1500,
+                        help='Number of training episodes (default: 1500)')
+    parser.add_argument('--steps', '-s', type=int, default=100,
+                        help='Steps per episode (default: 100)')
     parser.add_argument('--test', '-t', action='store_true',
                         help='Test mode (skip training)')
     parser.add_argument('--model', '-m', type=str, default='dqn_unified_best.pth',
