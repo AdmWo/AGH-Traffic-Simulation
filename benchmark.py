@@ -74,7 +74,17 @@ def run_episode(simulator, control_mode, policy_net=None, state_size=0, action_s
     # Fixed timing state
     fixed_action_idx = 0
     fixed_timer = 0
-    fixed_phase_duration = 15  # steps per phase
+    fixed_phase_duration = 8  # steps per phase (each step = 15 frames, so ~120 frames per phase)
+    
+    # Spawn initial vehicles (like training does)
+    level_num = simulator.current_level_num
+    for _ in range(8):
+        if level_num == 1:
+            simulator._spawn_level1_vehicle()
+        elif level_num == 2:
+            simulator._spawn_level2_vehicle()
+        elif level_num == 3:
+            simulator._spawn_level3_vehicle()
     
     # Metrics tracking
     total_throughput = 0
@@ -84,14 +94,16 @@ def run_episode(simulator, control_mode, policy_net=None, state_size=0, action_s
     max_vehicles = 0
     
     for step in range(steps):
-        # Spawn vehicles based on current level
-        level_num = simulator.current_level_num
-        if level_num == 1:
-            simulator._spawn_level1_vehicle()
-        elif level_num == 2:
-            simulator._spawn_level2_vehicle()
-        elif level_num == 3:
-            simulator._spawn_level3_vehicle()
+        # Spawn vehicles every 3 steps (matching training)
+        if step % 3 == 0:
+            level_num = simulator.current_level_num
+            for _ in range(2):  # Spawn 2 vehicles at a time like training
+                if level_num == 1:
+                    simulator._spawn_level1_vehicle()
+                elif level_num == 2:
+                    simulator._spawn_level2_vehicle()
+                elif level_num == 3:
+                    simulator._spawn_level3_vehicle()
         
         # Select action based on control mode
         if control_mode == 'ai' and policy_net is not None:
@@ -122,8 +134,9 @@ def run_episode(simulator, control_mode, policy_net=None, state_size=0, action_s
         # Apply action
         simulator.apply_level_action(action)
         
-        # Update simulation
-        simulator.update()
+        # Run 15 simulation frames per decision (matching training!)
+        for _ in range(15):
+            simulator.update()
         
         # Collect metrics
         metrics = simulator.get_metrics()
