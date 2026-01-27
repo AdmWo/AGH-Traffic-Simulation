@@ -167,6 +167,8 @@ class Level:
     - Where vehicles spawn and exit
     - The state vector format
     - The action space (what configurations the AI can set)
+    
+    v3: Simple action space - just signal configurations, no duration control.
     """
     
     def __init__(self, name: str):
@@ -214,14 +216,18 @@ class Level:
         return len(self.get_state())
     
     def get_action_count(self) -> int:
-        """Returns the number of possible actions."""
+        """Returns total number of actions (simple - just signal configs)."""
         return len(self.actions)
     
-    def apply_action(self, action_id: int):
-        """Apply an action to set signal configurations."""
+    def apply_action(self, action_id: int) -> str:
+        """Apply an action to set signal configurations.
+        
+        Returns: action_name
+        """
         if action_id < 0 or action_id >= len(self.actions):
-            return
-            
+            return "Invalid"
+        
+        # Apply signal configuration
         action = self.actions[action_id]
         for int_id, config in action.items():
             if int_id in self.intersections:
@@ -233,6 +239,12 @@ class Level:
                 for direction in intersection.signal_states.keys():
                     intersection.set_signal(direction, 'green' if direction in green_dirs else 'red')
                     intersection.set_arrow(direction, direction in arrow_dirs)
+        
+        # Get action name
+        if hasattr(self, 'action_names') and action_id < len(self.action_names):
+            return self.action_names[action_id]
+        else:
+            return f"Action {action_id}"
     
     def get_metrics(self) -> dict:
         """Returns detailed metrics for reward calculation."""
@@ -333,21 +345,27 @@ class Level1(Level):
             
     def _define_actions(self):
         """
-        8 actions matching the original set_phase() function:
+        12 actions for Level 1:
         0-3: East-West (right-left) green with different arrow combos
         4-7: North-South (down-up) green with different arrow combos
+        8-11: Single direction green (for more granular AI control)
         """
         self.actions = [
-            # EW green variations
+            # EW green variations (both directions together - traditional)
             {'INT1': {'green': ['right', 'left'], 'arrows': []}},
             {'INT1': {'green': ['right', 'left'], 'arrows': ['right', 'left']}},
             {'INT1': {'green': ['right', 'left'], 'arrows': ['down', 'up']}},
             {'INT1': {'green': ['right', 'left'], 'arrows': ['right', 'down', 'left', 'up']}},
-            # NS green variations
+            # NS green variations (both directions together - traditional)
             {'INT1': {'green': ['down', 'up'], 'arrows': []}},
             {'INT1': {'green': ['down', 'up'], 'arrows': ['down', 'up']}},
             {'INT1': {'green': ['down', 'up'], 'arrows': ['right', 'left']}},
             {'INT1': {'green': ['down', 'up'], 'arrows': ['right', 'down', 'left', 'up']}},
+            # Single direction green (for more control - AI can clear one queue at a time)
+            {'INT1': {'green': ['right'], 'arrows': ['right']}},  # Only West approach (A)
+            {'INT1': {'green': ['left'], 'arrows': ['left']}},    # Only East approach (C)
+            {'INT1': {'green': ['down'], 'arrows': ['down']}},    # Only North approach (B)
+            {'INT1': {'green': ['up'], 'arrows': ['up']}},        # Only South approach (D)
         ]
         
         self.action_names = [
@@ -359,6 +377,10 @@ class Level1(Level):
             'NS Green + NS Arrows',
             'NS Green + EW Arrows',
             'NS Green + All Arrows',
+            'Only A (West)',
+            'Only C (East)',
+            'Only B (North)',
+            'Only D (South)',
         ]
 
 

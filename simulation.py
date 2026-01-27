@@ -116,12 +116,34 @@ LANE_LABELS = {
     'up': 'D'
 }
 
-# Where each turn type takes you from each direction
+# Where each turn type takes you from each direction (Level 1 only)
 DESTINATION_MAP = {
     'right': {'straight': 'C', 'right': 'D', 'left': 'B'},
     'down': {'straight': 'D', 'right': 'A', 'left': 'C'},
     'left': {'straight': 'A', 'right': 'B', 'left': 'D'},
     'up': {'straight': 'B', 'right': 'C', 'left': 'A'}
+}
+
+# Level 2 destinations - based on spawn point and turn type
+DESTINATION_MAP_L2 = {
+    'A':  {'straight': 'C', 'right': 'D1', 'left': 'B1'},   # From West
+    'B1': {'straight': 'D1', 'right': 'A', 'left': 'C'},    # From North-Left
+    'D1': {'straight': 'B1', 'right': 'C', 'left': 'A'},    # From South-Left
+    'C':  {'straight': 'A', 'right': 'B2', 'left': 'D2'},   # From East
+    'B2': {'straight': 'D2', 'right': 'C', 'left': 'A'},    # From North-Right
+    'D2': {'straight': 'B2', 'right': 'A', 'left': 'C'},    # From South-Right
+}
+
+# Level 3 destinations - based on spawn point and turn type
+DESTINATION_MAP_L3 = {
+    'N1': {'straight': 'S1', 'right': 'W1', 'left': 'E1'},  # From North-Left
+    'N2': {'straight': 'S2', 'right': 'W2', 'left': 'E2'},  # From North-Right
+    'E1': {'straight': 'W1', 'right': 'N1', 'left': 'S1'},  # From East-Top
+    'E2': {'straight': 'W2', 'right': 'N2', 'left': 'S2'},  # From East-Bottom
+    'S1': {'straight': 'N1', 'right': 'E1', 'left': 'W1'},  # From South-Left
+    'S2': {'straight': 'N2', 'right': 'E2', 'left': 'W2'},  # From South-Right
+    'W1': {'straight': 'E1', 'right': 'S1', 'left': 'N1'},  # From West-Top
+    'W2': {'straight': 'E2', 'right': 'S2', 'left': 'N2'},  # From West-Bottom
 }
 
 
@@ -292,7 +314,7 @@ class Vehicle:
             self.turn_type = 'straight'
         
         self.has_turned = False
-        self.destination = DESTINATION_MAP[direction][self.turn_type]
+        self.destination = self._get_destination()
         self.destination_lane = self.lane
         self.x, self.y = self._get_spawn_position()
         
@@ -399,52 +421,90 @@ class Vehicle:
             y = base_y + self.size
             return x, y
     
-    def get_stop_position(self):
-        """Where this vehicle should stop if the light is red."""
-        road_width = LANES_PER_DIRECTION * LANE_WIDTH
-        
+    def _get_destination(self):
+        """Get destination label based on level, spawn point, and turn type."""
         if self.level == 1:
-            center_x = SCREEN_WIDTH // 2
-            center_y = SCREEN_HEIGHT // 2
-            if self.original_direction == 'right':
-                return center_x - road_width - 20
-            elif self.original_direction == 'down':
-                return center_y - road_width - 20
-            elif self.original_direction == 'left':
-                return center_x + road_width + 20
-            else:  # up
-                return center_y + road_width + 20
+            return DESTINATION_MAP[self.original_direction][self.turn_type]
+        elif self.level == 2:
+            # Use spawn_point if available, else use direction
+            if self.spawn_point and self.spawn_point in DESTINATION_MAP_L2:
+                return DESTINATION_MAP_L2[self.spawn_point][self.turn_type]
+            # Fallback to Level 1 style
+            return DESTINATION_MAP[self.original_direction][self.turn_type]
+        elif self.level == 3:
+            # Use spawn_point if available
+            if self.spawn_point and self.spawn_point in DESTINATION_MAP_L3:
+                return DESTINATION_MAP_L3[self.spawn_point][self.turn_type]
+            # Fallback to Level 1 style
+            return DESTINATION_MAP[self.original_direction][self.turn_type]
+        else:
+            return DESTINATION_MAP[self.original_direction][self.turn_type]
+    
+    def _get_intersection_center(self):
+        """Get the center position of the nearest intersection for this vehicle."""
+        if self.level == 1:
+            return SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2
         
         elif self.level == 2:
             center_y = SCREEN_HEIGHT // 2
-            int_x = self.intersection_x if self.intersection_x else 400
-            if self.original_direction == 'right':
-                return int_x - road_width - 20
-            elif self.original_direction == 'down':
-                return center_y - road_width - 20
-            elif self.original_direction == 'left':
-                return int_x + road_width + 20
-            else:  # up
-                return center_y + road_width + 20
+            int1_x = 400   # Left intersection
+            int2_x = 1000  # Right intersection
+            
+            # Determine which intersection based on spawn point or position
+            if self.spawn_point:
+                if self.spawn_point in ['A', 'B1', 'D1']:
+                    return int1_x, center_y
+                elif self.spawn_point in ['C', 'B2', 'D2']:
+                    return int2_x, center_y
+            
+            # Fallback: use position to determine nearest intersection
+            if self.x < (int1_x + int2_x) // 2:
+                return int1_x, center_y
+            else:
+                return int2_x, center_y
         
         elif self.level == 3:
-            # For level 3, stop position depends on which entry point
-            # Get the nearest intersection position
             left_x, right_x = 400, 1000
             top_y, bottom_y = 280, 520
             
-            if self.original_direction == 'right':
-                return left_x - road_width - 20
-            elif self.original_direction == 'left':
-                return right_x + road_width + 20
-            elif self.original_direction == 'down':
-                return top_y - road_width - 20
-            else:  # up
-                return bottom_y + road_width + 20
+            # Determine which intersection based on spawn point
+            if self.spawn_point:
+                if self.spawn_point in ['N1', 'W1']:
+                    return left_x, top_y      # INT1
+                elif self.spawn_point in ['N2', 'E1']:
+                    return right_x, top_y     # INT2
+                elif self.spawn_point in ['S1', 'W2']:
+                    return left_x, bottom_y   # INT3
+                elif self.spawn_point in ['S2', 'E2']:
+                    return right_x, bottom_y  # INT4
+            
+            # Fallback: find nearest intersection based on current position
+            intersections = [
+                (left_x, top_y),
+                (right_x, top_y),
+                (left_x, bottom_y),
+                (right_x, bottom_y),
+            ]
+            nearest = min(intersections, key=lambda p: abs(self.x - p[0]) + abs(self.y - p[1]))
+            return nearest
         
         # Default fallback
-        center = SCREEN_WIDTH // 2 if self.original_direction in ['right', 'left'] else SCREEN_HEIGHT // 2
-        return center - road_width - 20 if self.original_direction in ['right', 'down'] else center + road_width + 20
+        return SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2
+    
+    def get_stop_position(self):
+        """Where this vehicle should stop if the light is red.
+        Uses the nearest intersection center for multi-intersection levels."""
+        road_width = LANES_PER_DIRECTION * LANE_WIDTH
+        center_x, center_y = self._get_intersection_center()
+        
+        if self.original_direction == 'right':
+            return center_x - road_width - 20
+        elif self.original_direction == 'down':
+            return center_y - road_width - 20
+        elif self.original_direction == 'left':
+            return center_x + road_width + 20
+        else:  # up
+            return center_y + road_width + 20
     
     def is_before_stop_line(self):
         """Are we still approaching the intersection?"""
@@ -530,8 +590,7 @@ class Vehicle:
     
     def _execute_turn(self):
         """Actually make the turn - changes our heading and snaps to the new lane."""
-        center_x = SCREEN_WIDTH // 2
-        center_y = SCREEN_HEIGHT // 2
+        center_x, center_y = self._get_intersection_center()
         road_width = LANES_PER_DIRECTION * LANE_WIDTH
         
         if self.turn_type == 'right':
@@ -577,8 +636,7 @@ class Vehicle:
     def _is_at_turn_point(self):
         """Have we reached the spot where we should actually turn?
         Right turns happen early, left turns happen late (after crossing the intersection)."""
-        center_x = SCREEN_WIDTH // 2
-        center_y = SCREEN_HEIGHT // 2
+        center_x, center_y = self._get_intersection_center()
         road_width = LANES_PER_DIRECTION * LANE_WIDTH
         
         if self.turn_type == 'right':
@@ -614,8 +672,7 @@ class Vehicle:
             self.wait_time += 1
             return
         
-        center_x = SCREEN_WIDTH // 2
-        center_y = SCREEN_HEIGHT // 2
+        center_x, center_y = self._get_intersection_center()
         road_width = LANES_PER_DIRECTION * LANE_WIDTH
         
         # Check if entering intersection
@@ -1351,7 +1408,8 @@ class TrafficSimulator:
             pygame.draw.circle(self.screen, (0, 0, 0), (arrow_x, y), SIGNAL_RADIUS // 2 + 2)
             pygame.draw.circle(self.screen, arrow_color, (arrow_x, y), SIGNAL_RADIUS // 2)
         
-        if timer is not None:
+        # Only show timer if not AI-controlled (demo has its own timing display)
+        if timer is not None and not getattr(self, 'ai_controlled', False):
             timer_text = self.small_font.render(f"{timer:.1f}s", True, (255, 255, 255))
             self.screen.blit(timer_text, (x - 20, y + 25))
     
@@ -1665,13 +1723,15 @@ class TrafficSimulator:
         else:
             return 'Invalid phase'
     
-    def switch_level(self, level_num: int = None):
+    def switch_level(self, level_num: int = None, quiet: bool = True):
         """Switch to a different level. Clears all vehicles and resets state.
         
         If level_num is None, cycles to the next level (1 -> 2 -> 3 -> 1).
+        Set quiet=False to print level info (for debugging).
         """
         if not LEVELS_AVAILABLE:
-            print("Level system not available")
+            if not quiet:
+                print("Level system not available")
             return
         
         # Cycle through levels if no specific level given
@@ -1681,7 +1741,8 @@ class TrafficSimulator:
         try:
             new_level = get_level_by_number(level_num)
         except ValueError:
-            print(f"Level {level_num} not found")
+            if not quiet:
+                print(f"Level {level_num} not found")
             return
         
         # Clear all vehicles from the current level's segments if it exists
@@ -1703,10 +1764,6 @@ class TrafficSimulator:
         
         # Apply first action to set signals
         self.apply_level_action(0)
-        
-        print(f"Switched to {new_level.name}")
-        print(f"  State size: {new_level.get_state_size()}")
-        print(f"  Actions: {new_level.get_action_count()}")
     
     def get_level_info(self) -> dict:
         """Returns information about the current level."""
@@ -1730,20 +1787,10 @@ class TrafficSimulator:
     def apply_level_action(self, action_id: int) -> str:
         """Apply an action using the level's action space.
         
-        For Level 1, this is the same as set_phase().
-        For Levels 2-3, this coordinates multiple intersections.
+        Simple: just returns the action name.
         """
         if self.current_level:
-            self.current_level.apply_action(action_id)
-            
-            # Also update the local signals to match (for rendering)
-            # For Level 1, we sync with the level's intersection signals
-            if hasattr(self.current_level, 'action_names'):
-                action_name = self.current_level.action_names[action_id] if action_id < len(self.current_level.action_names) else 'Unknown'
-            else:
-                action_name = f'Action {action_id}'
-            
-            return action_name
+            return self.current_level.apply_action(action_id)
         else:
             return self.set_phase(action_id)
     

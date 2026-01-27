@@ -43,6 +43,8 @@ LR_DECAY_GAMMA = 0.9           # LR multiplier at each decay step
 
 # Maximum sizes across all levels (Level 3 is largest)
 MAX_STATE_SIZE = 60   # Padded to be safe
+# Simple action space - just signal configurations, no duration control
+# Level 1: 12 actions, Level 2: 8 actions, Level 3: 16 actions
 MAX_ACTION_SIZE = 16  # Level 3 has 16 actions
 
 
@@ -101,51 +103,30 @@ def pad_state(state, target_size=MAX_STATE_SIZE):
 
 
 def get_valid_actions(level_num):
-    """Get the number of valid actions for a level."""
-    if level_num == 3:
-        return 16
-    else:
-        return 8
+    """Get the number of valid actions for a level.
+    
+    Simple action space - just signal configurations.
+    Level 1: 12 actions, Level 2: 8 actions, Level 3: 16 actions
+    """
+    base_actions = {1: 12, 2: 8, 3: 16}
+    return base_actions.get(level_num, 8)
 
 
 def compute_reward(simulator, prev_metrics, action, prev_action):
-    """Compute reward based on traffic flow - THROUGHPUT FOCUSED."""
+    """Compute reward - ULTRA SIMPLE: just throughput."""
     metrics = simulator.get_metrics()
     
-    # Calculate deltas
+    # Only one thing matters: how many cars got through
     throughput_delta = metrics.get('total_throughput', 0) - prev_metrics.get('total_throughput', 0)
-    wait_delta = prev_metrics.get('avg_wait_time', 0) - metrics.get('avg_wait_time', 0)
-    waiting_now = metrics.get('waiting_vehicles', 0)
-    waiting_prev = prev_metrics.get('waiting_vehicles', 0)
-    waiting_delta = waiting_prev - waiting_now  # Positive if fewer waiting
     
-    reward = 0.0
+    # Simple reward: +10 per car that passes through
+    reward = throughput_delta * 10.0
     
-    # PRIMARY: Strong reward for throughput (cars passing through)
-    # This is the main goal - get cars through the intersection
-    reward += throughput_delta * 3.0  # Very strong throughput bonus
-    
-    # SECONDARY: Reward for reducing waiting vehicles
-    reward += waiting_delta * 0.3
-    
-    # TERTIARY: Small reward for reducing average wait time
-    reward += wait_delta * 0.1
-    
-    # Small bonus just for having any throughput (encourages green lights)
+    # Small bonus for any progress
     if throughput_delta > 0:
-        reward += 0.5  # Bonus for any cars getting through
+        reward += 1.0
     
-    # Minimal penalty for changing signals (allow adaptation)
-    if action != prev_action:
-        reward -= 0.02  # Very small penalty, don't discourage needed changes
-    
-    # Gentle penalty for congestion (many waiting vehicles)
-    if waiting_now > 20:
-        reward -= (waiting_now - 20) * 0.01  # Only penalize severe congestion
-    
-    # Clip reward to reasonable range
-    reward = np.clip(reward, -10, 10)
-    
+    # No clipping - let the model see the full signal
     return reward, metrics
 
 
@@ -162,21 +143,24 @@ def spawn_vehicles_fast(simulator, count=5):
 
 def run_episode(simulator, policy_net, target_net, memory, optimizer, 
                 epsilon, level_num, steps_per_episode=100, training=True):
-    """Run one episode on a specific level - FAST mode without delays."""
+    """Run one episode on a specific level - FAST mode without delays.
+    
+    Simple action space: just signal configurations (no duration control).
+    Focus on medium-to-heavy traffic for better real-world performance.
+    """
     
     # Reset the simulator by switching to same level (clears vehicles)
     simulator.switch_level(level_num)
     
-    # Set moderate spawn rates
-    # Randomize spawn rates: very light (0.01) to heavy (0.5)
-    # This helps AI learn to handle all traffic scenarios
+    # FOCUS ON HEAVY TRAFFIC: 0.2-0.5 instead of 0.01-0.5
+    # This teaches AI to handle congestion, not just cruise through empty roads
     if simulator.current_level:
         for seg_id, seg in simulator.current_level.segments.items():
             if seg_id.startswith('entry_'):
-                seg.spawn_rate = random.uniform(0.01, 0.5)
+                seg.spawn_rate = random.uniform(0.2, 0.5)
     
-    # Spawn initial vehicles directly (no sleep!)
-    spawn_vehicles_fast(simulator, count=8)
+    # Spawn initial vehicles directly
+    spawn_vehicles_fast(simulator, count=10)
     
     valid_actions = get_valid_actions(level_num)
     state = pad_state(simulator.get_state())
@@ -184,6 +168,9 @@ def run_episode(simulator, policy_net, target_net, memory, optimizer,
     prev_action = 0
     
     total_reward = 0
+    
+    # Fixed 15 frames per step (simple, consistent)
+    FRAMES_PER_STEP = 15
     
     for step in range(steps_per_episode):
         # Epsilon-greedy action selection
@@ -197,14 +184,14 @@ def run_episode(simulator, policy_net, target_net, memory, optimizer,
                 q_values[0, valid_actions:] = float('-inf')
                 action = q_values.argmax().item()
         
-        # Apply action
+        # Apply action (simple - just signal config)
         simulator.apply_level_action(action)
         
-        # Run simulation frames FAST (no sleep!)
-        for _ in range(15):
+        # Run fixed number of frames
+        for frame in range(FRAMES_PER_STEP):
             simulator.update()
         
-        # Occasionally spawn more vehicles (replaces background spawner)
+        # Spawn vehicles every 3 steps
         if step % 3 == 0:
             spawn_vehicles_fast(simulator, count=2)
         
@@ -270,12 +257,16 @@ def train_step(policy_net, target_net, memory, optimizer):
     optimizer.step()
 
 
-def train(episodes=1500, steps_per_episode=100):
-    """Train the unified model across all levels."""
+def train(episodes=3000, steps_per_episode=100):
+    """Train the unified model across all levels.
+    
+    v3: Simple action space (no duration), heavy traffic focus, simple reward.
+    """
     
     print("\n" + "=" * 60)
-    print("  UNIFIED MULTI-LEVEL DQN TRAINING (IMPROVED)")
+    print("  UNIFIED DQN TRAINING v3 (SIMPLIFIED)")
     print("=" * 60)
+    print("  Changes: Simple actions (8-16), heavy traffic, throughput-only reward")
     print(f"  Episodes: {episodes}")
     print(f"  Steps per episode: {steps_per_episode}")
     print(f"  State size: {MAX_STATE_SIZE}, Action size: {MAX_ACTION_SIZE}")

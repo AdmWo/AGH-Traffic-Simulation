@@ -165,7 +165,7 @@ class DemoPanel:
                 rates[f"entry_{key}"] = scaled_rate
         return rates
     
-    def draw(self, screen, font, metrics, action_name="", control_mode="ai"):
+    def draw(self, screen, font, metrics, action_name="", control_mode="ai", phase_remaining=0.0):
         # Panel background
         panel_rect = pygame.Rect(self.x, self.y, self.width, 700)
         pygame.draw.rect(screen, (25, 25, 35), panel_rect)
@@ -191,13 +191,13 @@ class DemoPanel:
             'fixed': (150, 150, 255)   # Blue for Fixed
         }
         mode_texts = {
-            'ai': "MODE: AI (trained)",
+            'ai': "MODE: AI",
             'random': "MODE: RANDOM",
-            'fixed': "MODE: FIXED TIMING"
+            'fixed': "MODE: FIXED"
         }
         mode_color = mode_colors.get(control_mode, (200, 200, 200))
         mode_text = mode_texts.get(control_mode, "MODE: ???")
-        text = font.render(mode_text, True, mode_color)
+        text = font.render(f"{mode_text} ({phase_remaining:.1f}s)", True, mode_color)
         screen.blit(text, (self.x + 10, self.stats_y))
         
         # Current action
@@ -244,12 +244,18 @@ class DemoPanel:
             "Drag sliders to change",
             "traffic spawn rates.",
             "",
-            "A: Cycle control mode",
+            "CONTROLS:",
+            "A: Cycle mode",
             "L: Switch level",
-            "R: Reset sliders (25%)",
-            "M: Max all (stress)",
+            "R: Reset (25%)",
+            "M: Max all",
             "Z: Zero all",
             "ESC: Exit",
+            "",
+            "Phase durations:",
+            "  AI: 5s (fast)",
+            "  Random: 8s",
+            "  Fixed: 10s",
         ]
         
         for line in instructions:
@@ -316,6 +322,7 @@ def run_demo(level_num=1, model_file=None):
     
     # Create simulator
     simulator = TrafficSimulator(level=level_num)
+    simulator.ai_controlled = True  # Disable background signal cycling - demo controls lights
     time.sleep(0.3)
     
     level_info = simulator.get_level_info()
@@ -339,19 +346,24 @@ def run_demo(level_num=1, model_file=None):
     current_mode_idx = 0 if use_ai else 1  # Start with AI if available, else random
     control_mode = control_modes[current_mode_idx]
     
-    # Fixed timing state
-    fixed_action_idx = 0
-    fixed_timer = 0
-    fixed_phase_duration = 90  # frames per phase (1.5 seconds at 60fps)
+    # Timing configuration - how long each signal configuration lasts (in frames, 60fps)
+    # All modes use reasonable fixed durations now (no AI duration control)
+    phase_durations = {
+        'ai': 300,      # 5 seconds - AI can react faster
+        'random': 480,  # 8 seconds - random needs time to see effect
+        'fixed': 600,   # 10 seconds - standard traffic light cycle
+    }
+    
+    phase_timer = 0  # Counts up until phase_duration, then triggers new decision
+    fixed_action_idx = 0  # For fixed mode cycling
+    current_duration = phase_durations.get(control_mode, 480)
     
     # Main loop
     running = True
     action = 0
     action_name = "Initializing..."
-    frame = 0
-    frames_per_decision = 45  # Make decision every 0.75 seconds for more responsive signals
     
-    # Apply initial action immediately
+    # Apply initial action
     action_name = simulator.apply_level_action(0)
     
     while running:
@@ -384,7 +396,6 @@ def run_demo(level_num=1, model_file=None):
                     
                     if simulator.current_level and hasattr(simulator.current_level, 'action_names'):
                         action_names = simulator.current_level.action_names
-                    print(f"  Switched to Level {level_num}")
                 elif event.key == pygame.K_r:
                     # Reset sliders to 25% (normal spawn rate)
                     for slider in panel.sliders.values():
@@ -408,7 +419,9 @@ def run_demo(level_num=1, model_file=None):
                     if control_mode == 'ai' and not use_ai:
                         current_mode_idx = (current_mode_idx + 1) % len(control_modes)
                         control_mode = control_modes[current_mode_idx]
-                    print(f"  Control mode: {control_mode.upper()}")
+                    # Reset timer so new mode starts fresh
+                    phase_timer = 0
+                    current_duration = phase_durations.get(control_mode, 600)
             
             panel.handle_event(event)
         
@@ -422,19 +435,27 @@ def run_demo(level_num=1, model_file=None):
         # Get valid action count for current level
         valid_actions = level_info['action_count']
         
-        # Control logic based on mode
-        if control_mode == 'fixed':
-            # Fixed timing: cycle through actions at fixed intervals
-            fixed_timer += 1
-            if fixed_timer >= fixed_phase_duration:
-                fixed_timer = 0
+        # Control logic - wait for phase duration then make next decision
+        phase_timer += 1
+        
+        if phase_timer >= current_duration:
+            phase_timer = 0  # Reset timer for next phase
+            
+            if control_mode == 'fixed':
+                # Fixed: simply cycle through all actions
                 fixed_action_idx = (fixed_action_idx + 1) % valid_actions
                 action = fixed_action_idx
                 action_name = simulator.apply_level_action(action)
-        elif frame % frames_per_decision == 0:
-            # AI or Random mode - make decision periodically
-            if control_mode == 'ai' and use_ai and policy_net:
-                # AI mode: use trained model
+                current_duration = phase_durations['fixed']
+            
+            elif control_mode == 'random':
+                # Random: pick random action
+                action = np.random.randint(0, valid_actions)
+                action_name = simulator.apply_level_action(action)
+                current_duration = phase_durations['random']
+            
+            elif control_mode == 'ai' and use_ai and policy_net:
+                # AI: use trained model to pick action
                 state = np.array(simulator.get_state(), dtype=np.float32)
                 # Pad or truncate state if needed
                 if len(state) < state_size:
@@ -451,17 +472,10 @@ def run_demo(level_num=1, model_file=None):
                         q_values[0, valid_actions:] = float('-inf')
                     
                     action = q_values.argmax().item()
-                    
-                    # Ensure action is valid for this level
                     action = min(action, valid_actions - 1)
-            else:
-                # Random mode: pick random action
-                action = np.random.randint(0, valid_actions)
-            
-            # Apply action using level's action system
-            action_name = simulator.apply_level_action(action)
-        
-        frame += 1
+                
+                action_name = simulator.apply_level_action(action)
+                current_duration = phase_durations['ai']
         
         # Update simulation
         simulator.update()
@@ -478,9 +492,10 @@ def run_demo(level_num=1, model_file=None):
         pygame.draw.rect(simulator.screen, (0, 0, 50), (10, 10, 100, 35))
         simulator.screen.blit(text, (20, 15))
         
-        # Draw panel
+        # Draw panel with remaining phase time
         metrics = simulator.get_metrics()
-        panel.draw(simulator.screen, simulator.small_font, metrics, action_name, control_mode)
+        phase_remaining = (current_duration - phase_timer) / 60.0  # Convert frames to seconds
+        panel.draw(simulator.screen, simulator.small_font, metrics, action_name, control_mode, phase_remaining)
         
         pygame.display.flip()
         simulator.clock.tick(60)

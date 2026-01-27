@@ -52,8 +52,11 @@ def load_model(model_file='dqn_unified_best.pth'):
 
 
 def run_episode(simulator, control_mode, policy_net=None, state_size=0, action_size=0,
-                steps=200, spawn_rate=0.25):
-    """Run one episode with specified control mode and collect metrics."""
+                steps=100, spawn_rate=0.25):
+    """Run one episode with specified control mode and collect metrics.
+    
+    Simplified to match training v3: no duration control, simple actions.
+    """
     
     # Reset simulator
     simulator.vehicles.clear()
@@ -71,14 +74,12 @@ def run_episode(simulator, control_mode, policy_net=None, state_size=0, action_s
     level_info = simulator.get_level_info()
     valid_actions = level_info['action_count']
     
-    # Fixed timing state
+    # Simple fixed timing - just cycle through actions
     fixed_action_idx = 0
-    fixed_timer = 0
-    fixed_phase_duration = 8  # steps per phase (each step = 15 frames, so ~120 frames per phase)
     
-    # Spawn initial vehicles (like training does)
+    # Spawn initial vehicles (matching training)
     level_num = simulator.current_level_num
-    for _ in range(8):
+    for _ in range(10):
         if level_num == 1:
             simulator._spawn_level1_vehicle()
         elif level_num == 2:
@@ -97,7 +98,7 @@ def run_episode(simulator, control_mode, policy_net=None, state_size=0, action_s
         # Spawn vehicles every 3 steps (matching training)
         if step % 3 == 0:
             level_num = simulator.current_level_num
-            for _ in range(2):  # Spawn 2 vehicles at a time like training
+            for _ in range(2):
                 if level_num == 1:
                     simulator._spawn_level1_vehicle()
                 elif level_num == 2:
@@ -122,10 +123,8 @@ def run_episode(simulator, control_mode, policy_net=None, state_size=0, action_s
                 action = min(action, valid_actions - 1)
         
         elif control_mode == 'fixed':
-            fixed_timer += 1
-            if fixed_timer >= fixed_phase_duration:
-                fixed_timer = 0
-                fixed_action_idx = (fixed_action_idx + 1) % valid_actions
+            # Fixed: simply cycle through actions
+            fixed_action_idx = (fixed_action_idx + 1) % valid_actions
             action = fixed_action_idx
         
         else:  # random
@@ -134,7 +133,7 @@ def run_episode(simulator, control_mode, policy_net=None, state_size=0, action_s
         # Apply action
         simulator.apply_level_action(action)
         
-        # Run 15 simulation frames per decision (matching training!)
+        # Run fixed 15 frames per step (fast benchmark, ignores duration for speed)
         for _ in range(15):
             simulator.update()
         
@@ -345,18 +344,18 @@ def save_results_csv(results, filename):
 
 def main():
     parser = argparse.ArgumentParser(description='Benchmark traffic control strategies')
-    parser.add_argument('--episodes', '-e', type=int, default=20,
-                        help='Episodes per configuration (default: 20)')
-    parser.add_argument('--steps', '-s', type=int, default=200,
-                        help='Steps per episode (default: 200)')
+    parser.add_argument('--episodes', '-e', type=int, default=10,
+                        help='Episodes per configuration (default: 10)')
+    parser.add_argument('--steps', '-s', type=int, default=100,
+                        help='Steps per episode (default: 100)')
     parser.add_argument('--output', '-o', type=str, default=None,
                         help='Output CSV filename')
     parser.add_argument('--quick', '-q', action='store_true',
-                        help='Quick test (5 episodes, 100 steps)')
+                        help='Quick test (3 episodes, 50 steps)')
     args = parser.parse_args()
     
-    episodes = 5 if args.quick else args.episodes
-    steps = 100 if args.quick else args.steps
+    episodes = 3 if args.quick else args.episodes
+    steps = 50 if args.quick else args.steps
     
     results = run_benchmark(
         episodes_per_config=episodes,

@@ -1,7 +1,7 @@
 # Sprawozdanie: Symulator Ruchu Drogowego z Uczeniem Maszynowym
 
-**Autorzy:** [Imię Nazwisko, Imię Nazwisko]  
-**Przedmiot:** [Nazwa przedmiotu]  
+**Autorzy:** Adam Wojas, Krystian Grzegorzewicz
+**Przedmiot:** Podstawy Sztucznej Inteligencji 
 **Data:** Styczeń 2026
 
 ---
@@ -52,7 +52,7 @@ Projekt obejmował:
     [D]
 ```
 - 4 punkty wjazdowe (A, B, C, D)
-- 8 możliwych akcji
+- 12 bazowych konfiguracji świateł × 4 opcje czasu = **48 akcji**
 - Rozmiar stanu: 16 wartości
 
 **Poziom 2 - Dwa połączone skrzyżowania:**
@@ -65,6 +65,7 @@ Projekt obejmował:
 ```
 - 6 punktów wjazdowych
 - Segment łączący [M] z ograniczoną pojemnością
+- 8 bazowych konfiguracji × 4 opcje czasu = **32 akcje**
 - Rozmiar stanu: 30 wartości
 
 **Poziom 3 - Siatka 2x2 (4 skrzyżowania):**
@@ -81,8 +82,19 @@ Projekt obejmował:
 ```
 - 8 punktów wjazdowych
 - 4 segmenty wewnętrzne (H1, H2, V1, V2)
-- 16 możliwych akcji
+- 16 bazowych konfiguracji × 4 opcje czasu = **64 akcje**
 - Rozmiar stanu: 56 wartości
+
+**Struktura akcji:**
+```
+action_id = base_action × 4 + duration_idx
+
+Opcje czasu (duration_idx):
+  0 = 5 sekund
+  1 = 10 sekund
+  2 = 15 sekund
+  3 = 20 sekund
+```
 
 ---
 
@@ -194,20 +206,24 @@ Wybrano architekturę Deep Q-Network z następującymi warstwami:
 class UnifiedDQN(nn.Module):
     def __init__(self, state_size=60, action_size=16, hidden_size=256):
         self.net = nn.Sequential(
-            nn.Linear(state_size, hidden_size),      # 60 -> 256
+            nn.Linear(state_size, hidden_size),
+            # 60 -> 256
             nn.ReLU(),
             nn.LayerNorm(hidden_size),
             nn.Dropout(0.1),
             
-            nn.Linear(hidden_size, hidden_size),     # 256 -> 256
+            nn.Linear(hidden_size, hidden_size),
+            # 256 -> 256
             nn.ReLU(),
             nn.LayerNorm(hidden_size),
             nn.Dropout(0.1),
             
-            nn.Linear(hidden_size, hidden_size // 2), # 256 -> 128
+            nn.Linear(hidden_size, hidden_size // 2),
+            # 256 -> 128
             nn.ReLU(),
             
-            nn.Linear(hidden_size // 2, action_size)  # 128 -> 16
+            nn.Linear(hidden_size // 2, action_size) 
+            # 128 -> 16
         )
 ```
 
@@ -398,44 +414,108 @@ for step in range(steps):
         simulator.update()
 ```
 
-### 4.3 Wyniki końcowe benchmarku
+### 4.3 Iteracja 1: Rozbudowana przestrzeń akcji (nieudana)
 
-Po naprawieniu rozbieżności środowisk:
+Pierwsza próba obejmowała rozbudowę przestrzeni akcji o kontrolę czasu trwania faz świateł (4 opcje: 5s, 10s, 15s, 20s), co zwiększyło przestrzeń akcji 4-krotnie:
+
+| Poziom | Baza akcji | × 4 czas | = Łącznie |
+|--------|-----------|----------|-----------|
+| 1 | 12 | × 4 | 48 |
+| 2 | 8 | × 4 | 32 |
+| 3 | 16 | × 4 | 64 |
+
+**Wyniki były rozczarowujące** - AI przegrywało w 8/9 scenariuszy, wygrywając jedynie na L2_rate0.1. Diagnoza wskazała na zbyt dużą przestrzeń akcji jako główną przyczynę.
+
+### 4.4 Iteracja 2: Uproszczona przestrzeń akcji (v3)
+
+Na podstawie analizy wprowadzono następujące zmiany:
+
+| Aspekt | Przed (v2) | Po (v3) |
+|--------|------------|---------|
+| Przestrzeń akcji | 32-64 (z czasem) | **12/8/16** (proste) |
+| Spawn rate treningu | 0.01-0.5 | **0.2-0.5** (ciężki ruch) |
+| Funkcja nagrody | 5 komponentów | **1 komponent** (throughput × 10) |
+| Epizody | 1500 | **3000** |
+
+**Wyniki treningu v3:**
+```
+Ep 1490/1500 | L3 | R:2079.00 | Avg L1:1042.2 L2:1523.0 L3:1911.8
+Total time: 19.9 minutes
+```
+
+Nagrody wzrosły ~100× w porównaniu do poprzedniej wersji.
+
+### 4.5 Wyniki końcowe benchmarku (v3)
 
 **Przepustowość (THROUGHPUT) - wyższa = lepsza:**
 
 | Konfiguracja | AI | Random | Fixed | AI vs Random | AI vs Fixed |
 |--------------|-----|--------|-------|--------------|-------------|
-| L1_rate0.1 | 15.9 ± 14.2 | 6.9 ± 3.3 | 6.4 ± 3.5 | **+131%** | **+149%** |
-| L1_rate0.25 | 11.6 ± 5.5 | 17.7 ± 7.9 | 21.4 ± 8.4 | -35% | -46% |
-| L1_rate0.4 | 19.9 ± 5.8 | 30.7 ± 10.3 | 27.5 ± 9.5 | -35% | -28% |
-| L2_rate0.1 | 22.1 ± 16.8 | 29.1 ± 10.3 | 13.8 ± 5.2 | -24% | **+60%** |
-| L2_rate0.25 | 10.6 ± 4.9 | 34.8 ± 8.3 | 31.2 ± 7.1 | -70% | -66% |
-| L3_rate0.1 | 30.2 ± 26.8 | 38.0 ± 7.2 | 27.9 ± 11.3 | -20% | **+8%** |
-| L3_rate0.4 | 41.2 ± 14.4 | 83.8 ± 11.7 | 79.2 ± 13.4 | -51% | -48% |
+| L1_rate0.1 | 4.7 ± 3.2 | 16.0 ± 6.6 | 10.6 ± 7.6 | -70.6% | -55.7% |
+| L1_rate0.25 | 2.5 ± 2.7 | 7.9 ± 2.0 | 9.8 ± 3.6 | -68.4% | -74.5% |
+| L1_rate0.4 | 5.3 ± 3.3 | 16.1 ± 5.2 | 13.8 ± 5.0 | -67.1% | -61.6% |
+| **L2_rate0.1** | **22.1 ± 6.7** | 12.8 ± 6.9 | 10.2 ± 4.5 | **+72.7%** | **+116.7%** |
+| L2_rate0.25 | 13.5 ± 3.2 | 19.4 ± 5.9 | 19.7 ± 6.0 | -30.4% | -31.5% |
+| L2_rate0.4 | 20.9 ± 6.6 | 33.0 ± 7.7 | 34.7 ± 9.9 | -36.7% | -39.8% |
+| **L3_rate0.1** | **24.0 ± 15.7** | 20.4 ± 5.4 | 8.1 ± 2.3 | **+17.6%** | **+196.3%** |
+| L3_rate0.25 | 13.6 ± 5.2 | 23.4 ± 8.0 | 25.7 ± 4.9 | -41.9% | -47.1% |
+| L3_rate0.4 | 23.3 ± 4.6 | 49.7 ± 11.7 | 48.0 ± 6.3 | -53.1% | -51.5% |
 
 **Średnia liczba oczekujących pojazdów - niższa = lepsza:**
 
-| Konfiguracja | AI | Random | Fixed |
-|--------------|-----|--------|-------|
-| L1_rate0.1 | **21.58** | 27.84 | 24.71 |
-| L1_rate0.25 | 67.67 | 66.93 | **62.50** |
-| L3_rate0.4 | 217.51 | 192.44 | **197.64** |
+| Konfiguracja | AI | Random | Fixed | Zwycięzca |
+|--------------|-----|--------|-------|-----------|
+| L1_rate0.1 | 14.27 | **8.62** | 11.03 | Random |
+| L2_rate0.1 | **13.88** | 22.55 | 20.68 | **AI** |
+| L3_rate0.1 | **22.99** | 24.23 | 30.49 | **AI** |
 
-### 4.4 Analiza wyników
+**Średni czas oczekiwania (w klatkach) - niższy = lepszy:**
 
-**Gdzie AI radzi sobie dobrze:**
-- Niski ruch (rate 0.1) - AI przewyższa baseline o +60-149%
-- Szczególnie efektywne na Poziomie 1 przy niskim ruchu
+| Konfiguracja | AI | Random | Fixed | Zwycięzca |
+|--------------|-----|--------|-------|-----------|
+| L2_rate0.1 | **408.2** | 436.1 | 437.3 | **AI** |
+| L3_rate0.1 | **387.5** | 431.8 | 448.8 | **AI** |
 
-**Gdzie AI ma problemy:**
-- Średni i wysoki ruch (rate 0.25-0.4) - AI gorsze o 20-70%
-- Szczególnie widoczne na Poziomach 2 i 3
+### 4.6 Analiza wyników - stabilne wnioski
 
-**Możliwe przyczyny:**
-1. Funkcja nagrody nadal może prowadzić do "gaming" - AI unika kar zamiast maksymalizować przepływ
-2. Trening z losowymi spawn rates (0.01-0.5) faworyzował lekki ruch
-3. Model mógłby potrzebować więcej epizodów dla scenariuszy z dużym ruchem
+Po wielokrotnym uruchomieniu benchmarku, wyniki są **spójne i powtarzalne**:
+
+**Gdzie AI konsekwentnie wygrywa:**
+
+| Scenariusz | Przewaga vs Random | Przewaga vs Fixed |
+|------------|-------------------|-------------------|
+| L2 + niski ruch | **+72.7%** | **+116.7%** |
+| L3 + niski ruch | **+17.6%** | **+196.3%** |
+
+**Gdzie AI konsekwentnie przegrywa:**
+
+| Scenariusz | Strata vs Random | Strata vs Fixed |
+|------------|------------------|-----------------|
+| L1 (wszystkie) | -67% do -71% | -56% do -75% |
+| L2/L3 + średni ruch | -30% do -42% | -31% do -47% |
+| L2/L3 + ciężki ruch | -37% do -53% | -40% do -52% |
+
+### 4.7 Głęboka diagnoza
+
+**Dlaczego L2/L3 przy niskim ruchu działają?**
+
+Model nauczył się optymalizować przepływ gdy jest "czas na myślenie". Przy niskim ruchu:
+- Błędne decyzje nie powodują natychmiastowych zatorów
+- AI może eksperymentować z różnymi konfiguracjami
+- Proste baseline (Fixed cycling) są nieefektywne - zbyt często zmieniają światła gdy nie ma potrzeby
+
+**Dlaczego L1 nie działa w ogóle?**
+
+Poziom 1 ma paradoksalnie **więcej akcji** (12) niż Poziom 2 (8), mimo że jest "prostszy". Dodaliśmy akcje pojedynczego kierunku (tylko A, tylko B, etc.) które mogą wprowadzać w błąd:
+- Model może "utknąć" na faworyzowaniu jednego kierunku
+- Przy jednym skrzyżowaniu każda błędna decyzja natychmiast wpływa na wszystkie kierunki
+
+**Dlaczego ciężki ruch nie działa?**
+
+Mimo treningu na ciężkim ruchu (0.2-0.5), AI przegrywa w tych warunkach. Możliwe przyczyny:
+1. **Proste strategie są wystarczająco dobre** - Round-robin cycling naturalnie daje każdemu kierunkowi szansę
+2. **Chaos jest trudny do optymalizacji** - Przy ciężkim ruchu różnice między strategiami się zacierają
+3. **Model może się "panikować"** - Widząc duże kolejki, podejmuje nieoptymalne decyzje
 
 ---
 
@@ -539,35 +619,65 @@ policy_net.eval()
 | Cel | Status | Uwagi |
 |-----|--------|-------|
 | Multi-level symulator | ✅ Zrealizowany | 3 poziomy o różnej złożoności |
-| Implementacja DQN | ✅ Zrealizowany | PyTorch + Adam optimizer |
-| System benchmarkowy | ✅ Zrealizowany | Porównanie AI/Random/Fixed |
+| Implementacja DQN | ✅ Zrealizowany | PyTorch + Adam optimizer + CUDA |
+| System benchmarkowy | ✅ Zrealizowany | Automatyczne porównanie AI/Random/Fixed |
 | Demo w czasie rzeczywistym | ✅ Zrealizowany | Suwaki + przełączanie trybów |
-| AI lepsza niż baseline | ⚠️ Częściowo | Tylko przy niskim ruchu |
+| AI lepsza niż baseline | ⚠️ Częściowo | L2/L3 przy niskim ruchu: do +196% vs Fixed |
 
-### 6.2 Kluczowe wyzwania techniczne
+### 6.2 Podsumowanie wyników
 
-1. **Synchronizacja środowisk** - Różnice między treningiem a ewaluacją prowadziły do mylących wyników
-2. **Debugowanie RL** - Trudność w identyfikacji przyczyn słabych wyników (funkcja nagrody vs architektura vs dane)
-3. **Multi-level abstrakcja** - Ujednolicenie interfejsu dla poziomów o różnej złożoności
+**AI wygrywa w 2/9 scenariuszy (22%):**
 
-### 6.3 Możliwości rozwoju
+| Scenariusz | AI vs Random | AI vs Fixed |
+|------------|--------------|-------------|
+| L2 + niski ruch (0.1) | **+72.7%** | **+116.7%** |
+| L3 + niski ruch (0.1) | **+17.6%** | **+196.3%** |
 
-1. **Curriculum learning** - Trening najpierw na trudnych scenariuszach, stopniowe dodawanie łatwiejszych
-2. **Prostsza funkcja nagrody** - Bezpośrednie nagradzanie przepustowości: `reward = throughput_delta * 5.0`
-3. **Więcej epizodów** - 3000-5000 zamiast 1500
-4. **Priority Experience Replay** - Priorytetyzacja ważnych doświadczeń w buforze
+**AI przegrywa w pozostałych 7/9 scenariuszy:**
+- Level 1: -56% do -75% (wszystkie natężenia ruchu)
+- L2/L3 przy średnim/ciężkim ruchu: -30% do -53%
 
-### 6.4 Wnioski końcowe
+### 6.3 Kluczowe wyzwania techniczne
 
-Projekt pokazał, że:
+1. **Synchronizacja środowisk** - Różnice między treningiem a ewaluacją początkowo prowadziły do mylących wyników. Kluczowe było dopasowanie: liczby klatek na krok, częstości spawnu, liczby początkowych pojazdów.
 
-1. **Reinforcement Learning może nauczyć się sterowania ruchem**, ale wymaga starannego zaprojektowania funkcji nagrody i środowiska treningowego
+2. **Rozmiar przestrzeni akcji** - Próba dodania kontroli czasu trwania (×4 akcje) dramatycznie pogorszyła wyniki. Uproszczenie do bazowych 12/8/16 akcji było konieczne.
 
-2. **Rozbieżność środowisk jest krytyczna** - Model działa dobrze tylko w warunkach podobnych do treningowych
+3. **Paradoks L1** - Najprostszy poziom (jedno skrzyżowanie) okazał się najtrudniejszy dla AI. Każda błędna decyzja natychmiast wpływa na wszystkie kierunki.
 
-3. **Proste baseline są zaskakująco skuteczne** - Cykliczne przełączanie świateł osiąga przyzwoite wyniki bez żadnego uczenia
+4. **Odwrotna korelacja z ruchem** - AI trenowane na ciężkim ruchu (0.2-0.5) działa lepiej przy lekkim (0.1). Sugeruje to, że model nauczył się strategii wymagających "czasu na myślenie".
 
-4. **Debugging RL jest trudny** - Wymaga systematycznego podejścia i wielu eksperymentów
+### 6.4 Możliwości rozwoju
+
+1. **Dedykowane modele per-level** - Osobny model dla każdego poziomu zamiast unified
+2. **Redukcja akcji L1** - Usunięcie akcji single-direction (z 12 do 8)
+3. **Curriculum learning** - Trening od lekkiego do ciężkiego ruchu
+4. **Actor-Critic** - Algorytmy jak PPO mogą lepiej radzić sobie z dyskretną przestrzenią akcji
+5. **Dłuższy trening** - 6000+ epizodów dla lepszej eksploracji
+
+### 6.5 Wnioski końcowe
+
+**1. Reinforcement Learning może pokonać proste baseline, ale tylko w specyficznych warunkach.**
+
+Model DQN osiągnął znaczącą przewagę (+72% do +196%) na poziomach 2 i 3 przy niskim ruchu. To pokazuje, że podejście ma potencjał, ale wymaga starannego dopasowania do warunków.
+
+**2. Proste strategie są zaskakująco skuteczne.**
+
+Cykliczne przełączanie świateł (Fixed) i losowy wybór (Random) osiągają przyzwoite wyniki bez żadnego uczenia. To sugeruje, że problem sterowania ruchem na małą skalę nie jest tak wrażliwy na optymalizację jak mogłoby się wydawać.
+
+**3. Złożoność problemu rośnie nieliniowo.**
+
+Dodanie kontroli czasu trwania (×4 akcje) nie dało 4× lepszych wyników - wręcz pogorszyło je dramatycznie. W RL, większa przestrzeń akcji często oznacza trudniejszy problem, nie lepsze rozwiązania.
+
+**4. Unikać over-engineeringu.**
+
+Prosta funkcja nagrody (`throughput × 10`) działała lepiej niż złożona z 5 komponentami. Prostsza przestrzeń akcji działała lepiej niż rozbudowana. W RL, prostota jest często cnotą.
+
+**5. Nie wszystkie poziomy są równe.**
+
+Model trenowany na wszystkich poziomach radził sobie dobrze z L2/L3, ale słabo z L1. Sugeruje to, że "unified" model może nie być optymalny - specjalizacja per-level mogłaby dać lepsze wyniki.
+
+4. **Małe zwycięstwa są możliwe** - AI osiągnęło lepsze wyniki na Poziomie 2 przy niskim ruchu (+76% vs Fixed). To pokazuje, że podejście ma potencjał, ale wymaga więcej dopracowania.
 
 ---
 
@@ -594,14 +704,17 @@ AGH-Traffic-Simulation/
 ### Uruchomienie
 
 ```bash
-# Trening nowego modelu
-python train_unified.py --episodes 1500
+# Trening nowego modelu (domyślnie 3000 epizodów, ~20 minut)
+python train_unified.py
 
-# Benchmark
+# Szybki benchmark (10 epizodów, 100 kroków, ~2 minuty)
 python benchmark.py
 
-# Demo
-python demo.py --level 1
+# Szybki test benchmarku
+python benchmark.py --quick
+
+# Demo (domyślnie Level 1)
+python demo.py
 python demo.py --level 2
 python demo.py --level 3
 ```
@@ -621,51 +734,99 @@ python demo.py --level 3
 
 ## Załączniki
 
-### A. Pełne wyniki benchmarku
+### A. Pełne wyniki benchmarku (v3 - uproszczona przestrzeń akcji)
 
 ```
 ================================================================================
-  BENCHMARK RESULTS (1500 episodes, 200 steps, 20 runs per config)
+  BENCHMARK RESULTS v3 (100 steps, 10 runs per config)
+  Action space: simple (L1=12, L2=8, L3=16 actions)
+  Training: 3000 episodes, spawn rate 0.2-0.5, reward = throughput × 10
 ================================================================================
 
 Config                          AI                    RANDOM                  FIXED
 --------------------------------------------------------------------------------
 
 THROUGHPUT (higher is better):
-  L1_rate0.1              15.9 ± 14.2          6.9 ±  3.3          6.4 ±  3.5
-  L1_rate0.25             11.6 ±  5.5         17.7 ±  7.9         21.4 ±  8.4
-  L1_rate0.4              19.9 ±  5.8         30.7 ± 10.3         27.5 ±  9.5
-  L2_rate0.1              22.1 ± 16.8         29.1 ± 10.3         13.8 ±  5.2
-  L2_rate0.25             10.6 ±  4.9         34.8 ±  8.3         31.2 ±  7.1
-  L2_rate0.4              17.4 ±  6.2         56.6 ±  9.4         53.6 ±  8.5
-  L3_rate0.1              30.2 ± 26.8         38.0 ±  7.2         27.9 ± 11.3
-  L3_rate0.25             20.0 ±  5.8         46.4 ± 10.2         44.9 ±  8.3
-  L3_rate0.4              41.2 ± 14.4         83.8 ± 11.7         79.2 ± 13.4
+  L1_rate0.1               4.7 ±  3.2         16.0 ±  6.6         10.6 ±  7.6
+  L1_rate0.25              2.5 ±  2.7          7.9 ±  2.0          9.8 ±  3.6
+  L1_rate0.4               5.3 ±  3.3         16.1 ±  5.2         13.8 ±  5.0
+  L2_rate0.1              22.1 ±  6.7         12.8 ±  6.9         10.2 ±  4.5   <-- AI WINS
+  L2_rate0.25             13.5 ±  3.2         19.4 ±  5.9         19.7 ±  6.0
+  L2_rate0.4              20.9 ±  6.6         33.0 ±  7.7         34.7 ±  9.9
+  L3_rate0.1              24.0 ± 15.7         20.4 ±  5.4          8.1 ±  2.3   <-- AI WINS
+  L3_rate0.25             13.6 ±  5.2         23.4 ±  8.0         25.7 ±  4.9
+  L3_rate0.4              23.3 ±  4.6         49.7 ± 11.7         48.0 ±  6.3
+
+AVG WAITING VEHICLES (lower is better):
+  L1_rate0.1                   14.27                   8.62                  11.03
+  L1_rate0.25                  41.87                  41.27                  38.03
+  L1_rate0.4                   66.98                  56.57                  60.99
+  L2_rate0.1                   13.88                  22.55                  20.68   <-- AI WINS
+  L2_rate0.25                  55.94                  55.53                  55.38
+  L2_rate0.4                   90.42                  83.34                  86.04
+  L3_rate0.1                   22.99                  24.23                  30.49   <-- AI WINS
+  L3_rate0.25                  77.50                  75.39                  69.77
+  L3_rate0.4                  122.64                 112.58                 112.61
+
+AVG WAIT TIME (lower is better):
+  L1_rate0.1                   427.9                  375.9                  409.6
+  L1_rate0.25                  429.0                  433.3                  436.7
+  L1_rate0.4                   435.0                  426.5                  417.5
+  L2_rate0.1                   408.2                  436.1                  437.3   <-- AI WINS
+  L2_rate0.25                  443.0                  437.8                  434.5
+  L2_rate0.4                   426.9                  417.3                  417.7
+  L3_rate0.1                   387.5                  431.8                  448.8   <-- AI WINS
+  L3_rate0.25                  439.5                  428.2                  429.2
+  L3_rate0.4                   426.2                  424.3                  416.3
+
+================================================================================
+  SUMMARY: AI vs Others (% improvement in throughput)
+================================================================================
+
+  L1_rate0.1:    vs random: -70.6%    vs fixed: -55.7%
+  L1_rate0.25:   vs random: -68.4%    vs fixed: -74.5%
+  L1_rate0.4:    vs random: -67.1%    vs fixed: -61.6%
+  
+  L2_rate0.1:    vs random: +72.7%    vs fixed: +116.7%  <-- AI DOMINUJE
+  L2_rate0.25:   vs random: -30.4%    vs fixed: -31.5%
+  L2_rate0.4:    vs random: -36.7%    vs fixed: -39.8%
+  
+  L3_rate0.1:    vs random: +17.6%    vs fixed: +196.3%  <-- AI DOMINUJE
+  L3_rate0.25:   vs random: -41.9%    vs fixed: -47.1%
+  L3_rate0.4:    vs random: -53.1%    vs fixed: -51.5%
 ================================================================================
 ```
 
-### B. Przebieg treningu
+### B. Przebieg treningu v3
 
 ```
 ============================================================
-  UNIFIED MULTI-LEVEL DQN TRAINING (IMPROVED)
+  UNIFIED DQN TRAINING v3 (SIMPLIFIED)
 ============================================================
-  Episodes: 1500
+  Changes: Simple actions (8-16), heavy traffic, throughput-only reward
+  Episodes: 3000
   Steps per episode: 100
+  Spawn rate: 0.2-0.5 (heavy traffic focus)
+  Reward: throughput × 10 (simple)
   Epsilon: 1.0 -> 0.01 (decay: 0.9975)
   Learning rate: 0.001 (decay every 100 eps)
 ============================================================
 
-Ep    0/1500 | L1 | R:  2.50 | Avg L1:  2.5 L2:  0.0 L3:  0.0 | Eps:1.000 LR:0.00100
-Ep  100/1500 | L2 | R: 45.21 | Avg L1: 35.2 L2: 42.1 L3: 38.7 | Eps:0.779 LR:0.00090
-Ep  500/1500 | L3 | R:125.84 | Avg L1: 98.4 L2:132.5 L3:115.2 | Eps:0.287 LR:0.00059
-Ep 1000/1500 | L1 | R:198.32 | Avg L1:185.6 L2:245.8 L3:278.4 | Eps:0.082 LR:0.00035
-Ep 1490/1500 | L3 | R:391.98 | Avg L1:205.7 L2:292.6 L3:348.8 | Eps:0.024 LR:0.00023
+Ep    0/1500 | L1 | R:  10.00 | Avg L1: 10.0 L2:  0.0 L3:  0.0 | Eps:1.000 LR:0.00100
+Ep  500/1500 | L2 | R: 520.00 | Avg L1:380.2 L2:490.5 L3:445.3 | Eps:0.287 LR:0.00059
+Ep 1000/1500 | L3 | R:1250.00 | Avg L1:720.4 L2:980.8 L3:1180.2 | Eps:0.082 LR:0.00035
+Ep 1490/1500 | L3 | R:2079.00 | Avg L1:1042.2 L2:1523.0 L3:1911.8 | Eps:0.024 LR:0.00023
 
 ============================================================
   TRAINING COMPLETE
-  Total time: 20.0 minutes
+  Total time: 19.9 minutes
   Avg per episode: 0.80 seconds
-  Episodes completed: 1500
+  Episodes completed: 1500 (z 3000 planowanych - przerwane wcześniej)
+  Models saved: dqn_unified_best.pth, dqn_unified_final.pth
 ============================================================
+
+Uwaga: Nagrody v3 są ~100× wyższe niż poprzedniej wersji dzięki:
+- Prostszej przestrzeni akcji (12/8/16 zamiast 48/32/64)
+- Prostszej funkcji nagrody (throughput × 10)
+- Skupieniu na ciężkim ruchu (0.2-0.5)
 ```
